@@ -66,7 +66,7 @@ impl Method {
         let return_type = if blob.read_expected(0x01) {
             None
         } else {
-            let name = String::new();
+            let name = "__result".to_owned();
             let array = blob.peek_unsigned().0 == 0x1D;
             let kind = TypeKind::from_blob(&mut blob, generics);
             let input = false;
@@ -147,6 +147,24 @@ impl Method {
         }
     }
 
+    pub fn to_abi_impl_tokens(&self, self_name: &TypeName, calling_namespace: &str) -> TokenStream {
+        let abi_name = self_name.to_abi_tokens(calling_namespace);
+        let name = format_ident(&self.name);
+        let params = self
+            .params
+            .iter()
+            .chain(self.return_type.iter())
+            .map(|param| {
+                let name = format_ident(&param.name);
+                let abi = param.to_abi_tokens(calling_namespace);
+                quote! { #name: #abi }
+            });
+
+        quote! {
+            extern "system" fn #name(this: *const *const #abi_name, #(#params)*) -> ::winrt::ErrorCode
+        }
+    }
+
     fn to_param_tokens(&self, calling_namespace: &str) -> TokenStream {
         TokenStream::from_iter(
             self.params
@@ -211,7 +229,8 @@ impl Method {
 
             quote! {
                 pub fn #method_name<#constraints>(&self, #params) -> ::winrt::Result<#return_type> {
-                    let this = self.ptr.get();
+                    let this = <::winrt::ComPtr<Self> as ::winrt::ComInterface>::as_raw(&self.ptr);
+
                     if this.is_null() {
                         panic!("The `this` pointer was null when calling method");
                     }
@@ -225,7 +244,8 @@ impl Method {
         } else {
             quote! {
                 pub fn #method_name<#constraints>(&self, #params) -> ::winrt::Result<()> {
-                    let this = self.ptr.get();
+                    let this = <::winrt::ComPtr<Self> as ::winrt::ComInterface>::as_raw(&self.ptr);
+
                     if this.is_null() {
                         panic!("The `this` pointer was null when calling method");
                     }
@@ -246,7 +266,7 @@ impl Method {
         let params = self.to_param_tokens(calling_namespace);
         let constraints = self.to_constraint_tokens(calling_namespace);
         let args = self.to_arg_tokens();
-        let interface = interface.name.to_tokens(calling_namespace);
+        let interface = &*interface.name.to_tokens(calling_namespace);
 
         let return_type = if let Some(return_type) = &self.return_type {
             return_type.to_return_tokens(calling_namespace)
@@ -270,7 +290,7 @@ impl Method {
         let params = self.to_param_tokens(calling_namespace);
         let constraints = self.to_constraint_tokens(calling_namespace);
         let args = self.to_arg_tokens();
-        let interface = interface.name.to_tokens(calling_namespace);
+        let interface = &*interface.name.to_tokens(calling_namespace);
 
         let return_type = if let Some(return_type) = &self.return_type {
             return_type.to_return_tokens(calling_namespace)
@@ -280,7 +300,7 @@ impl Method {
 
         quote! {
             pub fn #method_name<#constraints>(#params) -> ::winrt::Result<#return_type> {
-                ::winrt::activation::factory::<Self, #interface>()?.#method_name(#args)
+                ::winrt::factory::<Self, #interface>()?.#method_name(#args)
             }
         }
     }

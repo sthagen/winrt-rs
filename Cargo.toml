@@ -9,8 +9,16 @@ repository = "https://github.com/microsoft/winrt-rs"
 
 [dependencies]
 winrt_macros = { path = "crates/macros" }
+sha1 = "0.6.0"
+
+[dev-dependencies]
+doc-comment = "0.3"
 
 [workspace]
 members = [
     "crates/*",
 ]
+
+[package.metadata.docs.rs]
+default-target = "x86_64-pc-windows-msvc"
+targets = ["x86_64-pc-windows-msvc", "i686-pc-windows-msvc"]

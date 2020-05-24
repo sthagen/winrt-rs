@@ -126,7 +126,7 @@ impl RequiredInterface {
     ) -> TokenStream {
         match self.kind {
             InterfaceKind::Default => {
-                let into = self.name.to_tokens(calling_namespace);
+                let into = &*self.name.to_tokens(calling_namespace);
                 quote! {
                     impl<#constraints> ::std::convert::From<#from> for #into {
                         fn from(value: #from) -> #into {
@@ -138,37 +138,39 @@ impl RequiredInterface {
                             ::std::convert::From::from(::std::clone::Clone::clone(value))
                         }
                     }
+                    impl<'a, #constraints> ::std::convert::Into<::winrt::Param<'a, #into>> for #from {
+                        fn into(self) -> ::winrt::Param<'a, #into> {
+                            ::winrt::Param::Owned(::std::convert::Into::<#into>::into(self))
+                        }
+                    }
+                    impl<'a, #constraints> ::std::convert::Into<::winrt::Param<'a, #into>> for &'a #from {
+                        fn into(self) -> ::winrt::Param<'a, #into> {
+                            ::winrt::Param::Owned(::std::convert::Into::<#into>::into(::std::clone::Clone::clone(self)))
+                        }
+                    }
                 }
             }
             InterfaceKind::NonDefault => {
-                let into = self.name.to_tokens(calling_namespace);
-                if self.name.generics.is_empty() {
-                    quote! {
-                        impl<#constraints> ::std::convert::From<#from> for #into {
-                            fn from(value: #from) -> #into {
-                                ::std::convert::From::from(&value)
-                            }
-                        }
-                        impl<#constraints> ::std::convert::From<&#from> for #into {
-                            fn from(value: &#from) -> #into {
-                                <#from as ::winrt::ComInterface>::query(value)
-                            }
+                let into = &*self.name.to_tokens(calling_namespace);
+                quote! {
+                    impl<#constraints> ::std::convert::From<#from> for #into {
+                        fn from(value: #from) -> #into {
+                            ::std::convert::From::from(&value)
                         }
                     }
-                } else {
-                    let guid = self.guid.to_tokens();
-
-                    quote! {
-                        impl<#constraints> ::std::convert::From<#from> for #into {
-                            fn from(value: #from) -> #into {
-                                ::std::convert::From::from(&value)
-                            }
+                    impl<#constraints> ::std::convert::From<&#from> for #into {
+                        fn from(value: &#from) -> #into {
+                            <#from as ::winrt::ComInterface>::query(value)
                         }
-                        impl<#constraints> ::std::convert::From<&#from> for #into {
-                            fn from(value: &#from) -> #into {
-                                const GUID: ::winrt::Guid = ::winrt::Guid::from_values(#guid);
-                                unsafe { <#from as ::winrt::ComInterface>::query_with_guid(value, &GUID) }
-                            }
+                    }
+                    impl<'a, #constraints> ::std::convert::Into<::winrt::Param<'a, #into>> for #from {
+                        fn into(self) -> ::winrt::Param<'a, #into> {
+                            ::winrt::Param::Owned(::std::convert::Into::<#into>::into(self))
+                        }
+                    }
+                    impl<'a, #constraints> ::std::convert::Into<::winrt::Param<'a, #into>> for &'a #from {
+                        fn into(self) -> ::winrt::Param<'a, #into> {
+                            ::winrt::Param::Owned(::std::convert::Into::<#into>::into(::std::clone::Clone::clone(self)))
                         }
                     }
                 }

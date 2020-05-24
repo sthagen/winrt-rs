@@ -1,4 +1,4 @@
-[![Build status](https://github.com/microsoft/winrt-rs/workflows/Build%20and%20Test/badge.svg)](https://github.com/microsoft/winrt-rs/actions)
+[![Build and Test](https://github.com/microsoft/winrt-rs/workflows/Build%20and%20Test/badge.svg?event=push)](https://github.com/microsoft/winrt-rs/actions)
 
 ## The Rust/WinRT language projection
 
@@ -17,24 +17,21 @@ winrt = { git = "https://github.com/microsoft/winrt-rs" }
 
 This will allow Cargo to download, build, and cache the Rust/WinRT support as a package directly from GitHub.
 
-Now use the `import` macro to import the desired winmd files and modules:
-
 ```rust
 use winrt::*;
 
+// Now use the `import` macro to import the desired winmd files and modules:
 import!(
     dependencies
-        "os"
+        os
     modules
         "windows.data.xml.dom"
         "windows.foundation"
         "windows.ui"
 );
-```
 
-Finally, make use of any WinRT APIs as needed. For example, here is an example of using the `XmlDocument` class to parse an XML document:
-
-```rust
+// Finally, make use of any WinRT APIs as needed. For example, here is
+// an example of using the `XmlDocument` class to parse an XML document:
 fn main() -> Result<()> {
     use windows::data::xml::dom::*;
 
@@ -50,3 +47,7 @@ fn main() -> Result<()> {
 ```
 
 For a more complete example, take a look at Robert Mikhayelyan's [Minesweeper](https://github.com/robmikh/minesweeper-rs).
+
+## Cross-platform support
+
+While support for platforms other than Windows (i.e., *-windows-msvc targets) is possible and on the long-term roadmap, support outside of Windows is not an immediate goal. If you are interested in support outside of Windows, please [let us know](https://github.com/microsoft/winrt-rs/issues/143).

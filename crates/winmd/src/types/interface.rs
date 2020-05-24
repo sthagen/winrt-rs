@@ -1,14 +1,17 @@
+use super::object::to_object_tokens;
 use crate::tables::*;
+use crate::types::debug;
 use crate::types::*;
 use crate::*;
 use proc_macro2::TokenStream;
-use quote::quote;
+use quote::*;
 use std::iter::FromIterator;
 
 #[derive(Debug)]
 pub struct Interface {
     pub name: TypeName,
     pub interfaces: Vec<RequiredInterface>,
+    pub signature: String,
 }
 
 impl Interface {
@@ -22,8 +25,13 @@ impl Interface {
         interfaces.push(default_interface);
 
         RequiredInterface::append_required(reader, &name, &mut interfaces);
+        let signature = name.base_interface_signature(reader);
 
-        Self { name, interfaces }
+        Self {
+            name,
+            interfaces,
+            signature,
+        }
     }
 
     pub fn dependencies(&self) -> Vec<TypeDef> {
@@ -45,33 +53,39 @@ impl Interface {
     pub fn to_tokens(&self) -> TokenStream {
         let definition = self.name.to_definition_tokens(&self.name.namespace);
         let abi_definition = self.name.to_abi_definition_tokens(&self.name.namespace);
-        let name = self.name.to_tokens(&self.name.namespace);
+        let name = &*self.name.to_tokens(&self.name.namespace);
         let phantoms = self.name.phantoms();
-        let constraints = self.name.constraints();
+        let constraints = &*self.name.constraints();
         let default_interface = &self.interfaces[0];
         debug_assert!(default_interface.kind == InterfaceKind::Default);
-        let guid = default_interface.guid.to_tokens();
+        let guid = self.name.to_guid_tokens(&default_interface.guid);
         let conversions = TokenStream::from_iter(self.interfaces.iter().skip(1).map(|interface| {
             interface.to_conversions_tokens(&self.name.namespace, &name, &constraints)
         }));
 
+        let object = to_object_tokens(&name, &constraints);
         let methods = to_method_tokens(&self.name.namespace, &self.interfaces);
         let abi_methods = default_interface.to_abi_method_tokens(&default_interface.name.namespace);
         let iterator = iterator_tokens(&self.name, &self.interfaces);
+        let signature = self.name.to_signature_tokens(&self.signature);
+        let async_get = async_get_tokens(&self.name, &self.interfaces);
+        let debug = debug::debug_tokens(&self.name, &self.interfaces);
 
         quote! {
             #[repr(transparent)]
-            #[derive(Default)]
             pub struct #definition where #constraints {
                 ptr: ::winrt::ComPtr<#name>,
                 #phantoms
             }
             impl<#constraints> #name {
                 #methods
+                #async_get
             }
             unsafe impl<#constraints> ::winrt::ComInterface for #name {
                 type VTable = #abi_definition;
-                const GUID: ::winrt::Guid = ::winrt::Guid::from_values(#guid);
+                fn iid() -> ::winrt::Guid {
+                    #guid
+                }
             }
             impl<#constraints> ::std::clone::Clone for #name {
                 fn clone(&self) -> Self {
@@ -83,20 +97,43 @@ impl Interface {
             }
             #[repr(C)]
             pub struct #abi_definition where #constraints {
-                __base: [usize; 6],
+                pub unknown_query_interface: extern "system" fn(::winrt::RawComPtr<::winrt::IUnknown>, &::winrt::Guid, *mut ::winrt::RawPtr) -> ::winrt::ErrorCode,
+                pub unknown_add_ref: extern "system" fn(::winrt::RawComPtr<::winrt::IUnknown>) -> u32,
+                pub unknown_release: extern "system" fn(::winrt::RawComPtr<::winrt::IUnknown>) -> u32,
+                pub inspectable_iids: extern "system" fn(::winrt::RawComPtr<::winrt::Object>, *mut u32, *mut *mut ::winrt::Guid) -> ::winrt::ErrorCode,
+                pub inspectable_type_name: extern "system" fn(::winrt::RawComPtr<::winrt::Object>, *mut <::winrt::HString as ::winrt::RuntimeType>::Abi) -> ::winrt::ErrorCode,
+                pub inspectable_trust_level: extern "system" fn(::winrt::RawComPtr<::winrt::Object>, *mut i32) -> ::winrt::ErrorCode,
                 #abi_methods
                 #phantoms
             }
             unsafe impl<#constraints> ::winrt::RuntimeType for #name {
-                type Abi = *const *const <Self as ::winrt::ComInterface>::VTable;
+                type Abi = ::winrt::RawComPtr<Self>;
+                fn signature() -> String {
+                    #signature
+                }
                 fn abi(&self) -> Self::Abi {
-                    self.ptr.get()
+                    <::winrt::ComPtr<Self> as ::winrt::ComInterface>::as_raw(&self.ptr)
                 }
                 fn set_abi(&mut self) -> *mut Self::Abi {
-                    self.ptr.set()
+                    self.ptr.set_abi()
+                }
+            }
+            #debug
+            impl<#constraints> ::std::default::Default for #name {
+                fn default() -> Self {
+                    Self {
+                        ptr: ::winrt::ComPtr::default(),
+                        #phantoms
+                    }
+                 }
+            }
+            impl<#constraints> ::std::cmp::PartialEq<Self> for #name {
+                fn eq(&self, other: &Self) -> bool {
+                    self.ptr == other.ptr
                 }
             }
             #conversions
+            #object
             #iterator
         }
     }

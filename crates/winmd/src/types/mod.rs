@@ -1,10 +1,13 @@
+mod async_get;
 mod class;
+mod debug;
 mod delegate;
 mod r#enum;
 mod interface;
 mod iterator;
 mod method;
 mod namespace;
+mod object;
 mod param;
 mod required_interface;
 mod required_interfaces;
@@ -14,6 +17,7 @@ mod type_guid;
 mod type_kind;
 mod type_name;
 
+pub(crate) use async_get::*;
 pub(crate) use class::Class;
 pub(crate) use delegate::Delegate;
 pub(crate) use interface::Interface;

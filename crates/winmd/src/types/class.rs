@@ -1,4 +1,6 @@
+use super::object::to_object_tokens;
 use crate::tables::*;
+use crate::types::debug;
 use crate::types::*;
 use crate::TypeReader;
 use proc_macro2::TokenStream;
@@ -12,6 +14,7 @@ pub struct Class {
     pub bases: Vec<TypeName>,
     pub interfaces: Vec<RequiredInterface>,
     pub default_constructor: bool,
+    pub signature: String,
 }
 
 impl Class {
@@ -21,6 +24,12 @@ impl Class {
         RequiredInterface::append_default(reader, &name, &mut interfaces);
         let mut bases = Vec::new();
         let mut base = def;
+
+        let signature = if !interfaces.is_empty() && interfaces[0].kind == InterfaceKind::Default {
+            name.class_signature(reader)
+        } else {
+            "".to_owned()
+        };
 
         loop {
             let (namespace, name) = base.extends(reader).name(reader);
@@ -34,12 +43,7 @@ impl Class {
             let name = name.to_string();
             let generics = Vec::new();
 
-            let base = TypeName {
-                namespace,
-                name,
-                generics,
-                def: base,
-            };
+            let base = TypeName::new(namespace, name, generics, base);
 
             RequiredInterface::append_required(reader, &base, &mut interfaces);
             bases.push(base);
@@ -76,6 +80,7 @@ impl Class {
             interfaces,
             bases,
             default_constructor,
+            signature,
         }
     }
 
@@ -88,12 +93,11 @@ impl Class {
     }
 
     pub fn to_tokens(&self) -> TokenStream {
-        let name = self.name.to_tokens(&self.name.namespace);
+        let name = &*self.name.to_tokens(&self.name.namespace);
         let type_name = self.type_name(&name);
         let methods = to_method_tokens(&self.name.namespace, &self.interfaces);
 
         if self.interfaces[0].kind == InterfaceKind::Default {
-            let guid = self.interfaces[0].guid.to_tokens();
             let conversions = TokenStream::from_iter(self.interfaces.iter().map(|interface| {
                 interface.to_conversions_tokens(&self.name.namespace, &name, &TokenStream::new())
             }));
@@ -101,40 +105,54 @@ impl Class {
             let new = if self.default_constructor {
                 quote! {
                     pub fn new() -> ::winrt::Result<Self> {
-                        ::winrt::activation::factory::<Self, ::winrt::IActivationFactory>()?.activate_instance::<Self>()
+                        ::winrt::factory::<Self, ::winrt::IActivationFactory>()?.activate_instance::<Self>()
                     }
                 }
             } else {
                 quote! {}
             };
 
+            let object = to_object_tokens(&name, &TokenStream::new());
             let bases = self.to_base_conversions_tokens(&self.name.namespace, &name);
             let iterator = iterator_tokens(&self.name, &self.interfaces);
+            let signature = &self.signature;
 
+            let default_name = &*self.interfaces[0].name.to_tokens(&self.name.namespace);
             let abi_name = self.interfaces[0].name.to_abi_tokens(&self.name.namespace);
+            let async_get = async_get_tokens(&self.name, &self.interfaces);
+            let debug = debug::debug_tokens(&self.name, &self.interfaces);
+
             quote! {
                 #[repr(transparent)]
-                #[derive(Default, Clone)]
+                #[derive(Default, Clone, PartialEq)]
                 pub struct #name { ptr: ::winrt::ComPtr<#name> }
                 impl #name {
                     #new
                     #methods
+                    #async_get
                 }
                 #type_name
                 unsafe impl ::winrt::ComInterface for #name {
                     type VTable = #abi_name;
-                    const GUID: ::winrt::Guid = ::winrt::Guid::from_values(#guid);
+                    fn iid() -> ::winrt::Guid {
+                        <#default_name as ::winrt::ComInterface>::iid()
+                    }
                 }
                 unsafe impl ::winrt::RuntimeType for #name {
-                    type Abi = *const *const <Self as ::winrt::ComInterface>::VTable;
+                    type Abi = ::winrt::RawComPtr<Self>;
+                    fn signature() -> String {
+                        #signature.to_owned()
+                    }
                     fn abi(&self) -> Self::Abi {
-                        self.ptr.get()
+                        <::winrt::ComPtr<Self> as ::winrt::ComInterface>::as_raw(&self.ptr)
                     }
                     fn set_abi(&mut self) -> *mut Self::Abi {
-                        self.ptr.set()
+                        self.ptr.set_abi()
                     }
                 }
+                #debug
                 #conversions
+                #object
                 #bases
                 #iterator
             }
@@ -153,7 +171,7 @@ impl Class {
         from: &TokenStream,
     ) -> TokenStream {
         TokenStream::from_iter(self.bases.iter().map(|base| {
-            let into = base.to_tokens(calling_namespace);
+            let into = &*base.to_tokens(calling_namespace);
             quote! {
                 impl ::std::convert::From<#from> for #into {
                     fn from(value: #from) -> #into {

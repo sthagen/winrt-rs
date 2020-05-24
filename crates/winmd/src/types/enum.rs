@@ -1,7 +1,6 @@
 use crate::tables::*;
 use crate::types::*;
 use crate::{format_ident, TypeReader};
-use std::collections::*;
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -10,6 +9,7 @@ use quote::{format_ident, quote};
 pub struct Enum {
     pub name: TypeName,
     pub fields: Vec<(String, EnumConstant)>,
+    pub signature: String,
 }
 
 #[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Debug)]
@@ -21,6 +21,7 @@ pub enum EnumConstant {
 impl Enum {
     pub fn from_type_def(reader: &TypeReader, def: TypeDef) -> Self {
         let name = TypeName::from_type_def(reader, def);
+        let signature = name.enum_signature(reader);
         let mut fields = Vec::new();
 
         for field in def.fields(reader) {
@@ -38,65 +39,81 @@ impl Enum {
             }
         }
 
-        Self { name, fields }
+        Self {
+            name,
+            fields,
+            signature,
+        }
     }
 
-    // TODO: need to model WinRT enums as structs rather than Rust enums as that would
-    // avoid hte issue of duplicates below and also allow bit flags WinRT enums.
     pub fn to_tokens(&self) -> TokenStream {
-        let name = self.name.to_tokens(&self.name.namespace);
-        let default = format_ident(&self.fields[0].0);
+        let name = &*self.name.to_tokens(&self.name.namespace);
+        let signature = &self.signature;
 
         let repr = match self.fields[0].1 {
             EnumConstant::U32(_) => format_ident!("u32"),
             EnumConstant::I32(_) => format_ident!("i32"),
         };
 
-        // Rust enum variants must be unique, but WinRT enums may contain duplicates
-        // so we remove any duplicates ensuring there is at least one of each value.
-        let mut values = BTreeSet::new();
-
-        let fields = self.fields.iter().filter(|field| {
-            if values.contains(&field.1) {
-                false
-            } else {
-                values.insert(field.1);
-                true
-            }
-        });
-
-        let fields = fields.map(|field| {
-            let name = format_ident(&field.0);
-
-            let value = match field.1 {
+        let fields = self.fields.iter().map(|(name, value)| {
+            let name = format_ident(&name);
+            let value = match value {
                 EnumConstant::U32(value) => quote! { #value },
                 EnumConstant::I32(value) => quote! { #value },
             };
 
             quote! {
-                #name = #value
+                pub const #name: Self = Self { value: #value };
             }
         });
+        let bitwise = bitwise_operators(&name, &self.fields[0].1);
 
         quote! {
-            #[repr(#repr)]
-            #[derive(Copy, Clone, Debug, PartialEq)]
-            pub enum #name {
-                #(#fields),*
+            #[repr(transparent)]
+            #[derive(Copy, Clone, Default, Debug, Eq, PartialEq)]
+            pub struct #name {
+                value: #repr
             }
-            impl ::std::default::Default for #name {
-                fn default() -> Self {
-                    Self::#default
-                }
+            impl #name {
+                #![allow(non_upper_case_globals)]
+                #(#fields)*
             }
             unsafe impl ::winrt::RuntimeType for #name {
-                type Abi = Self;
+                type Abi = #repr;
+                fn signature() -> String {
+                    #signature.to_owned()
+                }
                 fn abi(&self) -> Self::Abi {
-                    *self
+                    self.value
                 }
                 fn set_abi(&mut self) -> *mut Self::Abi {
-                    self as *mut Self::Abi
+                    &mut self.value
                 }
+            }
+            #bitwise
+        }
+    }
+}
+
+fn bitwise_operators(name: &TokenStream, value_type: &EnumConstant) -> TokenStream {
+    match value_type {
+        EnumConstant::I32(_) => return quote! {},
+        _ => {}
+    }
+
+    quote! {
+        impl ::std::ops::BitOr for #name {
+            type Output = Self;
+
+            fn bitor(self, rhs: Self) -> Self {
+                Self { value: self.value | rhs.value }
+            }
+        }
+        impl ::std::ops::BitAnd for #name {
+            type Output = Self;
+
+            fn bitand(self, rhs: Self) -> Self {
+                Self { value: self.value & rhs.value }
             }
         }
     }

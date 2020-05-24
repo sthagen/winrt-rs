@@ -3,18 +3,16 @@
 
 winrt::import!(
     dependencies
-        "os"
+        os
     modules
         "windows.foundation"
 );
 use windows::foundation::PropertyValue;
+use winrt::RuntimeName;
 
 #[test]
 fn static_class() -> winrt::Result<()> {
-    assert_eq!(
-        <PropertyValue as winrt::RuntimeName>::NAME,
-        "Windows.Foundation.PropertyValue"
-    );
+    assert_eq!(PropertyValue::NAME, "Windows.Foundation.PropertyValue");
 
     // TODO: test PropertyValue's methods here
 

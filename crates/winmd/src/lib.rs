@@ -13,6 +13,7 @@ mod type_tree;
 mod types;
 
 pub mod load_winmd;
+pub use file::WinmdFile;
 pub use type_limits::TypeLimits;
 pub use type_reader::TypeReader;
 pub use type_stage::TypeStage;
@@ -23,10 +24,6 @@ fn format_ident(name: &str) -> proc_macro2::Ident {
     } else {
         quote::format_ident!("r#{}", name)
     }
-}
-
-fn format_abi_ident(name: &str) -> proc_macro2::Ident {
-    quote::format_ident!("abi_{}", name)
 }
 
 #[cfg(target_pointer_width = "64")]

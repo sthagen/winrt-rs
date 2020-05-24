@@ -5,7 +5,7 @@ use std::ptr;
 
 /// A handle to a [Windows Runtime string](https://docs.microsoft.com/en-us/windows/win32/winrt/hstring)
 ///
-/// This handle should only be used for FFI purposes with Window Runtime APIs.
+/// This handle should only be used for FFI purposes with Windows Runtime APIs.
 #[repr(transparent)]
 pub struct HString {
     ptr: *mut Header,
@@ -66,6 +66,10 @@ impl HString {
 
 unsafe impl RuntimeType for HString {
     type Abi = *mut Header;
+
+    fn signature() -> String {
+        "string".to_owned()
+    }
 
     fn abi(&self) -> Self::Abi {
         self.ptr
@@ -184,7 +188,7 @@ impl<'a> From<&'a HString> for String {
 
 impl From<HString> for String {
     fn from(hstring: HString) -> Self {
-        hstring.into()
+        String::from(&hstring)
     }
 }
 
@@ -230,7 +234,7 @@ impl Header {
     fn duplicate(&mut self) -> *mut Header {
         if self.flags & REFERENCE_FLAG == 0 {
             unsafe {
-                (*self.shared.as_ptr()).count.addref();
+                (*self.shared.as_ptr()).count.add_ref();
                 self
             }
         } else {
@@ -312,5 +316,12 @@ mod tests {
     fn from_empty_string() {
         let h = HString::from("");
         assert!(format!("{}", h) == "");
+    }
+
+    #[test]
+    fn hstring_to_string() {
+        let h = HString::from("test");
+        let s = String::from(h);
+        assert!(s == "test");
     }
 }
