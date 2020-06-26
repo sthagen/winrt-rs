@@ -1,32 +1,32 @@
-use crate::ref_count::RefCount;
-use crate::runtime;
 use crate::*;
-use std::ptr;
 
-/// A handle to a [Windows Runtime string](https://docs.microsoft.com/en-us/windows/win32/winrt/hstring)
+/// A WinRT string, sometimes called an [HSTRING](https://docs.microsoft.com/en-us/windows/win32/winrt/hstring).
 ///
-/// This handle should only be used for FFI purposes with Windows Runtime APIs.
+/// A WinRT string is reference-counted and logically immutable. It can only be
+/// changed by clearing its value and replacing with a new value. It should only
+/// be used for FFI purposes with WinRT APIs.
 #[repr(transparent)]
 pub struct HString {
     ptr: *mut Header,
 }
 
 impl HString {
-    /// Create a new HString
+    /// Create an empty HString.
     ///
-    /// This function does no allocation
+    /// This function does no allocation.
     pub fn new() -> HString {
         Self {
             ptr: std::ptr::null_mut(),
         }
     }
 
-    /// Check whether the HString is the empty string or not
+    /// Returns `true` if the string is empty.
     pub fn is_empty(&self) -> bool {
+        // An empty HSTRING is represented by a null pointer.
         self.ptr.is_null()
     }
 
-    /// Read the length of the string
+    /// Returns the length of `self`.
     pub fn len(&self) -> usize {
         if self.is_empty() {
             return 0;
@@ -35,7 +35,7 @@ impl HString {
         unsafe { (*self.ptr).len as usize }
     }
 
-    /// Get the string as 16-bit wide characters (wchars)
+    /// Get the string as 16-bit wide characters (wchars).
     pub fn as_wide(&self) -> &[u16] {
         if self.is_empty() {
             return &[];
@@ -45,18 +45,21 @@ impl HString {
         unsafe { std::slice::from_raw_parts((*header).data, (*header).len as usize) }
     }
 
-    /// Clear the contents of the string and free the memory if the last handle to the string data
+    /// Clear the contents of the string and free the memory if `self` holds the
+    /// last reference to the string data.
     pub fn clear(&mut self) {
         if self.is_empty() {
             return;
         }
 
         unsafe {
+            // This flag indicates a "fast pass" string created by some languages where the
+            // header is allocated on the stack. Such strings must never be freed.
             let header = self.ptr;
             debug_assert!((*header).flags & REFERENCE_FLAG == 0);
 
             if (*((*header).shared.as_mut_ptr())).count.release() == 0 {
-                runtime::HeapFree(runtime::GetProcessHeap(), 0, self.ptr as RawPtr);
+                HeapFree(GetProcessHeap(), 0, self.ptr as RawPtr);
             }
         }
 
@@ -64,20 +67,22 @@ impl HString {
     }
 }
 
-unsafe impl RuntimeType for HString {
+unsafe impl AbiTransferable for HString {
     type Abi = *mut Header;
 
-    fn signature() -> String {
-        "string".to_owned()
-    }
-
-    fn abi(&self) -> Self::Abi {
+    fn get_abi(&self) -> Self::Abi {
         self.ptr
     }
 
     fn set_abi(&mut self) -> *mut Self::Abi {
         self.clear();
         &mut self.ptr
+    }
+}
+
+unsafe impl RuntimeType for HString {
+    fn signature() -> String {
+        "string".to_owned()
     }
 }
 
@@ -129,17 +134,17 @@ impl From<&str> for HString {
 
         let mut ptr = Header::alloc(value.len() as u32);
 
-        // place each utf-16 character into the buffer and
-        // increase len as we go along
+        // Place each utf-16 character into the buffer and
+        // increase len as we go along.
         for (index, wide) in value.encode_utf16().enumerate() {
             unsafe {
-                ptr::write((*ptr).data.add(index), wide);
+                std::ptr::write((*ptr).data.add(index), wide);
                 (*ptr).len = index as u32 + 1;
             }
         }
 
-        // write a 0 byte to the end of the buffer
-        unsafe { ptr::write((*ptr).data.offset((*ptr).len as isize), 0) };
+        // Write a 0 byte to the end of the buffer.
+        unsafe { std::ptr::write((*ptr).data.offset((*ptr).len as isize), 0) };
         Self { ptr }
     }
 }
@@ -213,10 +218,10 @@ struct Shared {
 impl Header {
     fn alloc(len: u32) -> *mut Header {
         debug_assert!(len != 0);
-        // alloc enough space for header and two bytes per character
+        // Allocate enough space for header and two bytes per character.
         let alloc_size = std::mem::size_of::<Header>() + 2 * len as usize;
-        let header =
-            unsafe { runtime::HeapAlloc(runtime::GetProcessHeap(), 0, alloc_size) as *mut Header };
+
+        let header = unsafe { HeapAlloc(GetProcessHeap(), 0, alloc_size) as *mut Header };
 
         if header.is_null() {
             panic!("Could not successfully allocate for HString");
@@ -226,18 +231,20 @@ impl Header {
             (*header).flags = 0;
             (*header).len = len;
             (*header).data = &mut (*(*header).shared.as_mut_ptr()).buffer_start;
-            (*(*header).shared.as_mut_ptr()).count = RefCount::new(1);
+            (*(*header).shared.as_mut_ptr()).count = RefCount::new();
         }
         header
     }
 
     fn duplicate(&mut self) -> *mut Header {
         if self.flags & REFERENCE_FLAG == 0 {
+            // If this is not a "fast pass" string then simply increment the reference count.
             unsafe {
                 (*self.shared.as_ptr()).count.add_ref();
                 self
             }
         } else {
+            // Otherwise, allocate a new string and copy the value into the new string.
             let copy = Header::alloc(self.len);
             unsafe {
                 std::ptr::copy_nonoverlapping(self.data, (*copy).data, self.len as usize + 1);
@@ -301,7 +308,7 @@ mod tests {
         fn perform_transfer(from: HString, to: &mut HString) {
             let from = std::mem::ManuallyDrop::new(from);
             let to = to.set_abi();
-            let from = from.abi();
+            let from = from.get_abi();
             unsafe { *to = from };
         }
 

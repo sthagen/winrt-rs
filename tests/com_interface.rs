@@ -1,12 +1,13 @@
 winrt::import!(
     dependencies
         os
-    modules
-        "windows.foundation"
+    types
+        windows::foundation::{IStringable, IUriRuntimeClass, Uri}
 );
 
 #[test]
 fn com_interface() -> winrt::Result<()> {
+    use winrt::AbiTransferable;
     use winrt::ComInterface;
 
     use windows::foundation::IStringable;
@@ -18,17 +19,18 @@ fn com_interface() -> winrt::Result<()> {
     // The class and the default interface have the same vtable types, which
     // means you can compare them directly.
     let u: IUriRuntimeClass = uri.into();
-    assert!(u.as_raw() == uri.as_raw());
+    assert!(u.get_abi() == uri.get_abi());
 
     // The class and the non-default interface have different vtable types, which
     // means we need to cast in order to compare their pointers (which won't match).
     let s: IStringable = uri.into();
-    assert!(s.as_raw() as winrt::RawPtr != uri.as_raw() as winrt::RawPtr);
+
+    assert!(s.as_iunknown() != uri.as_iunknown());
 
     // Here two different values of the same class won't share the same value as
     // they are unique instances even though they have the same vtable layout.
     let other = &Uri::create_uri("http://microsoft.com")?;
-    assert!(uri.as_raw() != other.as_raw());
+    assert!(uri.get_abi() != other.get_abi());
 
     // A default constructor class will always have a null vtable pointer.
     let uri = Uri::default();

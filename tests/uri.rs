@@ -1,8 +1,8 @@
 winrt::import!(
     dependencies
         os
-    modules
-        "windows.foundation.collections"
+    types
+        windows::foundation::Uri
 );
 
 use windows::foundation::Uri;

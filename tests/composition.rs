@@ -1,9 +1,12 @@
 winrt::import!(
     dependencies
         os
-    modules
-        "windows.ui.composition"
+    types
+        windows::ui::{Color, Colors}
+        windows::ui::composition::{Compositor, SpriteVisual, Visual}
 );
+
+use winrt::AbiTransferable;
 
 #[link(name = "coremessaging")]
 extern "stdcall" {

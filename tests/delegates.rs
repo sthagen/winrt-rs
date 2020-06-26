@@ -1,16 +1,17 @@
 winrt::import!(
     dependencies
         os
-    modules
-        "windows.foundation.collections"
+    types
+        windows::foundation::*
+        windows::foundation::collections::*
 );
 
+use winrt::AbiTransferable;
 use winrt::ComInterface;
 
 #[test]
 fn non_generic() -> winrt::Result<()> {
-    use windows::foundation::AsyncStatus;
-    use windows::foundation::IAsyncAction;
+    use windows::foundation::{AsyncStatus, IAsyncAction};
     type Handler = windows::foundation::AsyncActionCompletedHandler;
 
     assert_eq!(
@@ -21,10 +22,10 @@ fn non_generic() -> winrt::Result<()> {
     let d = Handler::default();
     assert!(d.is_null());
 
-    let mut invoked = false;
+    let (tx, rx) = std::sync::mpsc::channel();
 
-    let d = Handler::new(|info, status| {
-        invoked = true;
+    let d = Handler::new(move |info, status| {
+        tx.send(true).unwrap();
         assert!(info.is_null());
         assert!(status == AsyncStatus::Completed);
         Ok(())
@@ -34,7 +35,7 @@ fn non_generic() -> winrt::Result<()> {
     // to call them without an explicit `invoke` method e.g. `d(args);`
     d.invoke(IAsyncAction::default(), AsyncStatus::Completed)?;
 
-    assert!(invoked);
+    assert!(rx.recv().unwrap());
 
     Ok(())
 }
@@ -42,6 +43,7 @@ fn non_generic() -> winrt::Result<()> {
 #[test]
 fn generic() -> winrt::Result<()> {
     use windows::foundation::Uri;
+
     type Handler = windows::foundation::TypedEventHandler<Uri, i32>;
 
     // TODO: Handler::IID is not correct for generic types
@@ -49,21 +51,23 @@ fn generic() -> winrt::Result<()> {
     let d = Handler::default();
     assert!(d.is_null());
 
-    let uri = &Uri::create_uri("http://kennykerr.ca")?;
-    let mut invoked = false;
+    let uri = Uri::create_uri("http://kennykerr.ca")?;
+    let (tx, rx) = std::sync::mpsc::channel();
 
-    let d = Handler::new(|sender, port| {
-        invoked = true;
-        assert!(uri.as_raw() == sender.as_raw());
+    let uri_clone = uri.clone();
+    let d = Handler::new(move |sender, port| {
+        tx.send(true).unwrap();
+        assert!(uri_clone.get_abi() == sender.get_abi());
 
         // TODO: ideally primitives would be passed by value
         assert!(*port == 80);
         Ok(())
     });
 
-    d.invoke(uri, uri.port()?)?;
+    let port = uri.port()?;
+    d.invoke(uri, port)?;
 
-    assert!(invoked);
+    assert!(rx.recv().unwrap());
 
     Ok(())
 }
@@ -73,16 +77,18 @@ fn event() -> winrt::Result<()> {
     use windows::foundation::collections::*;
     use windows::foundation::*;
 
-    let set = &PropertySet::new()?;
-    let mut invoked = false;
+    let set = PropertySet::new()?;
+    let (tx, rx) = std::sync::mpsc::channel();
 
+    let set_clone = set.clone();
     // TODO: Should be able to elide the delegate construction and simply say:
     // set.map_changed(|sender, args| {...})?;
     set.map_changed(
-        MapChangedEventHandler::<winrt::HString, winrt::Object>::new(|sender, args| {
-            invoked = true;
+        MapChangedEventHandler::<winrt::HString, winrt::Object>::new(move |sender, args| {
+            tx.send(true).unwrap();
+            let set = set_clone.clone();
             let map: IObservableMap<winrt::HString, winrt::Object> = set.into();
-            assert!(map.as_raw() == sender.as_raw());
+            assert!(map.get_abi() == sender.get_abi());
             assert!(args.key()? == "A");
             assert!(args.collection_change()? == CollectionChange::ItemInserted);
             Ok(())
@@ -91,7 +97,7 @@ fn event() -> winrt::Result<()> {
 
     set.insert("A", PropertyValue::create_uint32(1)?)?;
 
-    assert!(invoked);
+    assert!(rx.recv().unwrap());
 
     Ok(())
 }
