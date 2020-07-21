@@ -25,7 +25,7 @@ impl Attribute {
             AttributeType::MemberRef(method) => match method.parent(reader) {
                 MemberRefParent::TypeDef(parent) => parent.name(reader),
                 MemberRefParent::TypeRef(parent) => parent.name(reader),
-                _ => panic!(),
+                _ => panic!("Expected a TypeDef or TypeRef"),
             },
         }
     }
@@ -60,7 +60,7 @@ impl Attribute {
                     let (namespace, type_name) = match type_def_or_ref {
                         TypeDefOrRef::TypeDef(type_def) => type_def.name(reader),
                         TypeDefOrRef::TypeRef(type_ref) => type_ref.name(reader),
-                        _ => panic!("Expected a TypeDef or TypeRef!"),
+                        _ => panic!("Expected a TypeDef or TypeRef"),
                     };
 
                     if namespace == "System" && type_name == "Type" {
@@ -82,7 +82,7 @@ impl Attribute {
                         read_enum(&e.underlying_type, &mut values)
                     }
                 }
-                _ => panic!(),
+                _ => panic!("Unexpected fixed attribute argument type"),
             };
 
             args.push((String::new(), arg));
@@ -92,8 +92,14 @@ impl Attribute {
         args.reserve(named_arg_count as usize);
 
         for _ in 0..named_arg_count {
+            let id = values.read_u8();
+            debug_assert!(
+                id == 0x53 || id == 0x54,
+                "A NamedArg must start with an id of 0x53 (Field) or 0x54 (Property)"
+            );
+            let arg_type = values.read_u8();
             let name = values.read_str().to_string();
-            let arg = match values.read_u8() {
+            let arg = match arg_type {
                 0x02 => AttributeArg::Bool(values.read_u8() != 0),
                 0x08 => AttributeArg::I32(values.read_i32()),
                 0x0E => AttributeArg::String(values.read_str().to_string()),
@@ -104,13 +110,7 @@ impl Attribute {
                         reader.resolve_type_def((&name[0..index], &name[index + 1..])),
                     )
                 }
-                // 0x55 => {
-                //     let name = values.read_str();
-                //     let index = name.rfind('.').unwrap();
-                //     let def = reader.resolve_type_def((&name[0..index], &name[index + 1..]));
-                //     def.fields(reader).next().unwrap().
-                // }
-                _ => panic!(),
+                _ => panic!("Unexpected named attribute argument type"),
             };
             args.push((name, arg));
         }

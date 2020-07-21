@@ -11,6 +11,7 @@ use curl::easy::Easy;
 use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 fn main() {
     if let Err(i) = run() {
@@ -44,7 +45,7 @@ fn run() -> Result<(), i32> {
         Subcommand::Install(i) => i.perform(),
         Subcommand::Run(r) => r.perform(),
         Subcommand::Build(b) => b.perform(),
-        Subcommand::Help => print_help(),
+        Subcommand::Help(h) => h.perform(),
     };
     if let Err(ref e) = result {
         cmd_err!("{}", e);
@@ -55,10 +56,6 @@ fn run() -> Result<(), i32> {
 
 fn parse_args() -> Result<Subcommand, ArgsError> {
     let mut args = pico_args::Arguments::from_env();
-    if args.contains(["-h", "--help"]) {
-        return Ok(Subcommand::Help);
-    }
-
     let mut subcommand = args.subcommand()?;
     if subcommand.as_deref() == Some("winrt") {
         // presumably running in cargo subcommand mode,
@@ -66,14 +63,29 @@ fn parse_args() -> Result<Subcommand, ArgsError> {
         subcommand = args.subcommand()?;
     }
 
+    if args.contains(["-h", "--help"]) {
+        return Ok(Subcommand::Help(Help { subcommand }));
+    }
+
     let verbose = args.contains(["-v", "--verbose"]);
     let force = args.contains(["-f", "--force"]);
-    args.finish()?;
-
     let subcommand = match subcommand.as_deref() {
-        Some("install") => Subcommand::Install(Install { verbose, force }),
-        Some("run") => Subcommand::Run(Run { verbose, force }),
-        Some("build") => Subcommand::Build(Build { verbose, force }),
+        Some("install") => {
+            args.finish()?;
+            Subcommand::Install(Install { verbose, force })
+        }
+        Some("run") => {
+            args.finish()?;
+            Subcommand::Run(Run { verbose, force })
+        }
+        Some("build") => {
+            args.finish()?;
+            Subcommand::Build(Build { verbose, force })
+        }
+        Some("help") => {
+            let subcommand = args.free()?.first().map(String::to_owned);
+            Subcommand::Help(Help { subcommand })
+        }
         Some(_) => return Err(ArgsError::NoSuchSubcommand(subcommand.unwrap())),
         None => return Err(ArgsError::MissingSubcommand),
     };
@@ -81,24 +93,26 @@ fn parse_args() -> Result<Subcommand, ArgsError> {
     Ok(subcommand)
 }
 
-fn print_help() -> anyhow::Result<()> {
+fn print_help() {
     println!(
         r#"
-USAGE:
-    cargo winrt <SUBCOMMAND>
+This utility assists with WinRT operations on the current crate.
 
-FLAGS:
+USAGE:
+    cargo winrt [OPTIONS] [SUBCOMMAND]
+
+OPTIONS:
     -h, --help       Prints help information
     -V, --version    Prints version information
 
 SUBCOMMANDS:
-    build
-    help       Prints this message or the help of the given subcommand(s)
-    install
-    run 
+    build      Installs the WinRT dependencies and performs a `cargo build`
+    install    Installs the WinRT dependencies of the package locally
+    run        Installs the WinRT dependencies and performs a `cargo run`
+
+See 'cargo winrt help <command>' for more information on a specific command.
             "#
     );
-    Ok(())
 }
 
 enum ArgsError {
@@ -118,7 +132,7 @@ enum Subcommand {
     Install(Install),
     Build(Build),
     Run(Run),
-    Help,
+    Help(Help),
 }
 
 #[derive(Debug)]
@@ -135,6 +149,21 @@ impl Build {
         };
         install.perform()?;
         cargo::build()
+    }
+
+    fn print_help() {
+        println!(
+            r#"
+Installs the WinRT dependencies and performs a `cargo build`
+
+USAGE:
+    cargo winrt build [OPTIONS]
+
+OPTIONS:
+    -f, --force      Forces reinstallation of WinRT dependencies
+    -v, --verbose    Use verbose output
+            "#
+        );
     }
 }
 
@@ -153,6 +182,21 @@ impl Run {
         install.perform()?;
         cargo::run()
     }
+
+    fn print_help() {
+        println!(
+            r#"
+Installs the WinRT dependencies and performs a `cargo run`
+
+USAGE:
+    cargo winrt run [OPTIONS]
+
+OPTIONS:
+    -f, --force      Forces reinstallation of WinRT dependencies
+    -v, --verbose    Use verbose output
+            "#
+        );
+    }
 }
 
 #[derive(Debug)]
@@ -169,16 +213,43 @@ fn verbose() -> bool {
     VERBOSITY.get().copied().unwrap_or(false)
 }
 
-macro_rules! debug {
-    ($($arg:tt)*) => {
+/// Formats the elapsed time to match Cargo's output.
+fn elapsed(duration: Duration) -> String {
+    let secs = duration.as_secs();
+
+    if secs >= 60 {
+        format!("{}m {:02}s", secs / 60, secs % 60)
+    } else {
+        format!("{}.{:02}s", secs, duration.subsec_nanos() / 10_000_000)
+    }
+}
+
+macro_rules! print_status {
+    ($status:expr, $message:expr) => ({
+        println!("{:>12} {}", console::style($status).green().bold(), $message);
+    });
+    ($status:expr, $message_fmt:expr, $($message_args:tt)*) => ({
+        println!("{:>12} {}", console::style($status).green().bold(), format!($message_fmt, $($message_args)*));
+    });
+}
+
+macro_rules! print_verbose_status {
+    ($status:expr, $message:expr) => ({
         if verbose() {
-            eprintln!("\t{}", format!($($arg)*));
+            eprintln!("{:>12} {}", console::style($status).green().bold(), $message);
         }
-    };
+    });
+    ($status:expr, $message_fmt:expr, $($message_args:tt)*) => ({
+        if verbose() {
+            eprintln!("{:>12} {}", console::style($status).green().bold(), format!($message_fmt, $($message_args)*));
+        }
+    });
 }
 
 impl Install {
     fn perform(&self) -> anyhow::Result<()> {
+        let start_time = Instant::now();
+
         let _ = VERBOSITY.set(self.verbose);
         let manifest = cargo::package_manifest()?;
         let local_dependencies = manifest.local_dependencies()?;
@@ -186,15 +257,19 @@ impl Install {
             self.install_from_manifest(dep_manifest)?;
         }
         self.install_from_manifest(manifest)?;
+
+        let time_elapsed = elapsed(start_time.elapsed());
+        print_status!(
+            "Finished",
+            "installing WinRT dependencies in {}",
+            time_elapsed
+        );
+
         Ok(())
     }
 
     fn install_from_manifest(&self, manifest: Manifest) -> anyhow::Result<()> {
-        debug!(
-            "{} dependencies for {}",
-            console::style("Resolving").green().bold(),
-            manifest.package_name()
-        );
+        print_verbose_status!("Resolving", manifest.package_name());
         let deps = manifest.get_dependency_descriptors()?;
         self.ensure_dependencies(deps)
     }
@@ -215,9 +290,10 @@ impl Install {
                 })
                 .collect::<anyhow::Result<Vec<DependencyDescriptor>>>()?
         };
-        debug!(
-            "{} {} nuget dependencies",
-            console::style("Installing").green().bold(),
+
+        print_verbose_status!(
+            "Installing",
+            "{} nuget dependencies",
             dependency_descriptors.len()
         );
 
@@ -234,15 +310,61 @@ impl Install {
     ) -> anyhow::Result<Vec<ResolvedDependency>> {
         deps.into_iter()
             .map(|dep| {
-                println!(
-                    "\t{}: {}",
-                    console::style("Fetching").green().bold(),
-                    dep.name()
-                );
+                print_status!("Fetching", dep.name());
                 let raw = dep.get()?;
                 Ok(ResolvedDependency::new(dep, raw)?)
             })
             .collect()
+    }
+
+    fn print_help() {
+        println!(
+            r#"
+Installs the WinRT dependencies of the package locally
+
+USAGE:
+    cargo winrt install [OPTIONS]
+
+OPTIONS:
+    -f, --force      Forces the installation, even if up to date
+    -v, --verbose    Use verbose output
+            "#
+        );
+    }
+}
+
+#[derive(Debug)]
+struct Help {
+    subcommand: Option<String>,
+}
+
+impl Help {
+    fn perform(&self) -> anyhow::Result<()> {
+        match &self.subcommand {
+            Some(subcommand) => match subcommand.as_str() {
+                "install" => Install::print_help(),
+                "build" => Build::print_help(),
+                "run" => Run::print_help(),
+                "help" => Help::print_help(),
+                unknown => {
+                    eprintln!("error: The subcommand '{}' wasn't recognized", unknown);
+                    Help::print_help()
+                }
+            },
+            None => crate::print_help(),
+        }
+        Ok(())
+    }
+
+    fn print_help() {
+        println!(
+            r#"
+Prints this message or the help of the given subcommand
+
+USAGE:
+    cargo winrt help [SUBCOMMAND]
+"#
+        );
     }
 }
 
@@ -329,12 +451,12 @@ fn try_download(url: String, recursion_amount: u8) -> anyhow::Result<Vec<u8>> {
                 true
             })
             .unwrap();
-        debug!(" making request to {}", url);
+        print_verbose_status!("Requesting", &url);
         transfer.perform()?;
     }
     match status.expect("HTTP request did not have a status code") {
         200u16 => {
-            debug!(" retrieved data from {}", url);
+            print_verbose_status!("Retrieved", "data from {}", url);
             let mut bytes = Vec::new();
             {
                 let mut transfer = handle.transfer();
@@ -380,7 +502,7 @@ enum RawNuget {
 
 impl RawNuget {
     fn contents(&self) -> anyhow::Result<(Vec<Winmd>, Vec<Dll>)> {
-        debug!(" starting extraction of '{}'", self.name());
+        print_verbose_status!("Starting", "extraction of '{}'", self.name());
         match self {
             RawNuget::Zipped { bytes, .. } => unzip(bytes),
             RawNuget::Unzipped { path, .. } => unpack(path),
@@ -455,7 +577,7 @@ fn extract_files<F: Read>(
     winmds: &mut Vec<Winmd>,
     dlls: &mut Vec<Dll>,
 ) -> anyhow::Result<()> {
-    debug!("   searching zip file: {:?}", path.display());
+    print_verbose_status!("Searching", "zip file: {}", path.display());
     match path.extension() {
         Some(e)
             if e == "winmd" && {
@@ -467,7 +589,7 @@ fn extract_files<F: Read>(
                 .file_name()
                 .context("windmd file name is not utf-8")?
                 .to_owned();
-            debug!(" {} winmd file {:?}", console::style("found").green(), name);
+            print_verbose_status!("Found", "winmd file: {:?}", name);
             let mut contents = Vec::with_capacity(file_size as usize);
 
             if let Err(e) = file.read_to_end(&mut contents) {
@@ -485,7 +607,7 @@ fn extract_files<F: Read>(
             let mut arch: Option<OsString> = None;
             for component in path.components() {
                 match component {
-                    std::path::Component::Normal(s) if s.to_string_lossy().starts_with("win10") => {
+                    std::path::Component::Normal(s) if s.to_string_lossy().starts_with("win") => {
                         arch = Some(s.to_owned());
                     }
                     std::path::Component::Normal(s) if s.to_string_lossy().ends_with("dll") => {
@@ -500,20 +622,22 @@ fn extract_files<F: Read>(
             }
             let (name, arch) = match (name, arch) {
                 (Some(n), Some(a)) => (n, a),
-                _ => {
+                (_, _) => {
                     return Err(anyhow::anyhow!(
                         "{} is not a valid dll path",
                         path.display()
-                    ))
+                    ));
                 }
             };
-            debug!(
-                "{} dll {:?} with arch {:?} at path {}",
-                console::style("found").green(),
+
+            print_verbose_status!(
+                "Found",
+                "dll {:?} with arch {:?} at path {}",
                 name,
                 arch,
                 path.display()
             );
+
             let mut contents = Vec::with_capacity(file_size as usize);
 
             if let Err(e) = file.read_to_end(&mut contents) {
@@ -558,12 +682,13 @@ impl ResolvedDependency {
     }
 
     fn save(self) -> anyhow::Result<()> {
-        debug!(
-            "{} {} winmd files and {} dlls",
-            console::style("Saving").green().bold(),
+        print_verbose_status!(
+            "Saving",
+            "{} winmd files and {} dlls",
             self.winmds().len(),
-            self.dlls().len(),
+            self.dlls().len()
         );
+
         let dep_directory = self.descriptor.directory_path()?;
         // create the dependency directory
         if !dep_directory.exists() {
@@ -572,8 +697,9 @@ impl ResolvedDependency {
         }
 
         for winmd in self.winmds() {
-            debug!(
-                "writing winmd file {:?} into {}",
+            print_verbose_status!(
+                "Writing",
+                "winmd file {:?} into {}",
                 winmd.name,
                 dep_directory.display()
             );
@@ -581,10 +707,11 @@ impl ResolvedDependency {
         }
 
         for dll in self.dlls() {
-            debug!(
-                "writing dll file {:?} into {}",
+            print_verbose_status!(
+                "Writing",
+                "dll file {:?} into {}",
                 dll.name,
-                dep_directory.display()
+                dep_directory.display(),
             );
             dll.write(&dep_directory).unwrap();
         }
@@ -616,9 +743,14 @@ struct Dll {
 
 impl Dll {
     fn write(&self, dir: &Path) -> anyhow::Result<()> {
-        let proper_arch = self.arch.as_os_str() == ARCH;
+        let proper_arch = ARCHES.contains(&&*self.arch.to_string_lossy());
         if !proper_arch {
-            debug!("   not creating symlink for {:?} because of differing architecture to host architecture: {:?} != {:?}", self.name, self.arch, ARCH);
+            print_verbose_status!(
+                "",
+                "   not creating symlink for {:?} because of differing architecture to host architecture: {:?} not in {:?}",
+                self.name,
+                self.arch,
+                ARCHES);
             return Ok(());
         }
         let path = dir.join(&self.name);
@@ -631,8 +763,9 @@ impl Dll {
             std::fs::create_dir_all(&profile_path)?;
             let dll_path = profile_path.join(&self.name);
             if std::fs::read_link(&dll_path).is_err() {
-                debug!(
-                    "   creating symlink for {:?} in {}: '{}' <-> '{}'",
+                print_verbose_status!(
+                    "Creating",
+                    "symlink for {:?} in {}: '{}' <-> '{}'",
                     self.name,
                     profile,
                     path.display(),
@@ -640,9 +773,11 @@ impl Dll {
                 );
                 std::os::windows::fs::symlink_file(&path, dll_path)?;
             } else {
-                debug!(
+                print_verbose_status!(
+                    "",
                     "   not creating symlink for {:?} in {} because it already exists",
-                    self.name, profile
+                    self.name,
+                    profile
                 );
             }
         }
@@ -652,10 +787,10 @@ impl Dll {
 }
 
 #[cfg(target_arch = "x86_64")]
-const ARCH: &str = "win10-x64";
+const ARCHES: &[&str] = &["win10-x64", "win-x64"];
 #[cfg(target_arch = "x86")]
-const ARCH: &str = "win10-x86";
+const ARCHES: &[&str] = &["win10-x86", "win-x86"];
 #[cfg(target_arch = "arm")]
-const ARCH: &str = "win10-arm";
+const ARCHES: &[&str] = &["win10-arm", "win-arm"];
 #[cfg(target_arch = "aarch64")]
-const ARCH: &str = "win10-arm64";
+const ARCHES: &[&str] = &["win10-arm64", "win-arm64"];

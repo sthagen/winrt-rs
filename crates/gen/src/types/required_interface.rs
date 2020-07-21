@@ -20,6 +20,7 @@ pub enum InterfaceKind {
     NonDefault,
     Overrides,
     Statics,
+    Composable,
 }
 
 impl RequiredInterface {
@@ -116,6 +117,10 @@ impl RequiredInterface {
                 kind = InterfaceKind::NonDefault;
             }
 
+            if interfaces.iter().any(|i| i.name == append_name) {
+                continue;
+            }
+
             interfaces.push(RequiredInterface::from_type_name_and_kind(
                 reader,
                 append_name,
@@ -144,12 +149,12 @@ impl RequiredInterface {
                 let into = &self.name.tokens;
                 quote! {
                     impl<#constraints> ::std::convert::From<#from> for #into {
-                        fn from(value: #from) -> #into {
+                        fn from(value: #from) -> Self {
                             unsafe { ::std::mem::transmute(value) }
                         }
                     }
                     impl<#constraints> ::std::convert::From<&#from> for #into {
-                        fn from(value: &#from) -> #into {
+                        fn from(value: &#from) -> Self {
                             ::std::convert::From::from(::std::clone::Clone::clone(value))
                         }
                     }
@@ -169,12 +174,12 @@ impl RequiredInterface {
                 let into = &self.name.tokens;
                 quote! {
                     impl<#constraints> ::std::convert::From<#from> for #into {
-                        fn from(value: #from) -> #into {
+                        fn from(value: #from) -> Self {
                             ::std::convert::From::from(&value)
                         }
                     }
                     impl<#constraints> ::std::convert::From<&#from> for #into {
-                        fn from(value: &#from) -> #into {
+                        fn from(value: &#from) -> Self {
                             <#from as ::winrt::ComInterface>::query(value)
                         }
                     }
@@ -214,6 +219,7 @@ pub fn to_method_tokens(interfaces: &Vec<RequiredInterface>) -> TokenStream {
                     method.to_non_default_tokens(interface)
                 }
                 InterfaceKind::Statics => method.to_static_tokens(interface),
+                InterfaceKind::Composable => method.to_composable_tokens(interface),
             });
         }
     }

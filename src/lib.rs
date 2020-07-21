@@ -59,6 +59,7 @@ mod param;
 mod runtime;
 mod runtime_name;
 mod runtime_type;
+mod time_span;
 
 #[doc(hidden)]
 pub use abi_transferable::AbiTransferable;
@@ -71,7 +72,7 @@ pub use array::Array;
 pub use com::*;
 pub use error::*;
 #[doc(hidden)]
-pub use factory::factory;
+pub use factory::{factory, FactoryCache};
 #[doc(hidden)]
 pub use guid::Guid;
 pub use hstring::HString;
@@ -84,6 +85,7 @@ pub use runtime::*;
 pub use runtime_name::RuntimeName;
 #[doc(hidden)]
 pub use runtime_type::RuntimeType;
+pub use time_span::TimeSpan;
 pub use winrt_macros::{build, import};
 
 #[doc(hidden)]

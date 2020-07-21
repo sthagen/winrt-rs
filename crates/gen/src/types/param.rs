@@ -30,6 +30,7 @@ impl Param {
                 TypeKind::String
                 | TypeKind::Object
                 | TypeKind::Guid
+                | TypeKind::TimeSpan
                 | TypeKind::Class(_)
                 | TypeKind::Interface(_)
                 | TypeKind::Struct(_)
@@ -61,6 +62,7 @@ impl Param {
                 TypeKind::String
                 | TypeKind::Object
                 | TypeKind::Guid
+                | TypeKind::TimeSpan
                 | TypeKind::Class(_)
                 | TypeKind::Interface(_)
                 | TypeKind::Struct(_)
@@ -90,7 +92,7 @@ impl Param {
         let tokens = self.kind.to_abi_tokens();
 
         if self.array {
-            let name_size = quote::format_ident!("{}_size__", &self.name);
+            let name_size = quote::format_ident!("array_size_{}", &self.name);
 
             if self.input {
                 quote! { #name_size: u32, #name: *const #tokens }
@@ -135,6 +137,7 @@ impl Param {
                     TypeKind::String
                     | TypeKind::Object
                     | TypeKind::Guid
+                    | TypeKind::TimeSpan
                     | TypeKind::Class(_)
                     | TypeKind::Interface(_)
                     | TypeKind::Struct(_)
@@ -156,14 +159,14 @@ impl Param {
 
         if self.array {
             let kind = self.kind.to_tokens();
-            let name_size = quote::format_ident!("{}_size__", name);
+            let name_size = quote::format_ident!("array_size_{}", name);
             if self.input {
-                quote! { unsafe { <#kind as ::winrt::AbiTransferable>::slice_from_abi(#name, #name_size as usize) } }
+                quote! { <#kind as ::winrt::AbiTransferable>::slice_from_abi(#name, #name_size as usize) }
             } else if self.by_ref {
                 // TODO: need to take resulting array and detach back onto the ABI
                 quote! { &mut ::winrt::Array::new() }
             } else {
-                quote! { unsafe { <#kind as ::winrt::AbiTransferable>::slice_from_mut_abi(#name, #name_size as usize) } }
+                quote! { <#kind as ::winrt::AbiTransferable>::slice_from_mut_abi(#name, #name_size as usize) }
             }
         } else if self.input {
             if self.kind.primitive() {

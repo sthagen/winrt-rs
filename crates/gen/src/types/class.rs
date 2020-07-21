@@ -1,4 +1,5 @@
 use super::object::to_object_tokens;
+use crate::format_ident;
 use crate::tables::*;
 use crate::types::*;
 use crate::TypeReader;
@@ -69,10 +70,28 @@ impl Class {
                         None => default_constructor = true,
                     }
                 }
+                ("Windows.Foundation.Metadata", "ComposableAttribute") => {
+                    // One of the arguments is a CompositionType enum and the Public variant
+                    // has a value of 2 as a signed 32-bit integer.
+                    for (_name, arg) in attribute.args(reader) {
+                        if let AttributeArg::I32(2) = arg {
+                            let mut interface = RequiredInterface::from_type_def(
+                                reader,
+                                attribute_factory(reader, attribute).unwrap(),
+                                &name.namespace,
+                            );
+                            interface.kind = InterfaceKind::Composable;
+                            interfaces.push(interface);
+                        }
+                    }
+                }
                 ("Windows.Foundation.Metadata", "MarshalingBehaviorAttribute") => {
-                    let args = attribute.args(reader);
-                    if let AttributeArg::I16(2) = args[0].1 {
-                        is_agile = true; // MarshalingType.Agile
+                    // The only argument is a MarshalingType enum and the Agile variant
+                    // has a value of 2 as a signed 32-bit integer.
+                    let (_name, arg) = &attribute.args(reader)[0];
+
+                    if let AttributeArg::I32(2) = arg {
+                        is_agile = true;
                     }
                 }
                 _ => {}
@@ -101,6 +120,7 @@ impl Class {
         let name = &self.name.tokens;
         let type_name = self.type_name(&name);
         let methods = to_method_tokens(&self.interfaces);
+        let call_factory = self.to_call_factory_tokens();
 
         if self.interfaces[0].kind == InterfaceKind::Default {
             let conversions = TokenStream::from_iter(
@@ -112,7 +132,7 @@ impl Class {
             let new = if self.default_constructor {
                 quote! {
                     pub fn new() -> ::winrt::Result<Self> {
-                        ::winrt::factory::<Self, ::winrt::IActivationFactory>()?.activate_instance::<Self>()
+                        Self::IActivationFactory(|f| f.activate_instance::<Self>())
                     }
                 }
             } else {
@@ -126,7 +146,7 @@ impl Class {
 
             let default_name = &self.interfaces[0].name.tokens;
             let abi_name = self.interfaces[0].name.to_abi_tokens();
-            let async_get = async_get_tokens(&self.name, &self.interfaces);
+            let (async_get, future) = get_async_tokens(&self.name, &self.interfaces);
             let debug = debug::debug_tokens(&self.name, &self.interfaces);
 
             let send_sync = if self.is_agile {
@@ -148,6 +168,7 @@ impl Class {
                     #new
                     #methods
                     #async_get
+                    #call_factory
                 }
                 #type_name
                 unsafe impl ::winrt::ComInterface for #name {
@@ -176,11 +197,15 @@ impl Class {
                 #bases
                 #iterator
                 #send_sync
+                #future
             }
         } else {
             quote! {
                 pub struct #name {}
-                impl #name { #methods }
+                impl #name {
+                    #methods
+                    #call_factory
+                }
                 #type_name
             }
         }
@@ -191,12 +216,12 @@ impl Class {
             let into = &base.tokens;
             quote! {
                 impl ::std::convert::From<#from> for #into {
-                    fn from(value: #from) -> #into {
+                    fn from(value: #from) -> Self {
                         ::std::convert::Into::<#into>::into(&value)
                     }
                 }
                 impl ::std::convert::From<&#from> for #into {
-                    fn from(value: &#from) -> #into {
+                    fn from(value: &#from) -> Self {
                         <#from as ::winrt::ComInterface>::query(value)
                     }
                 }
@@ -212,6 +237,49 @@ impl Class {
                 }
             }
         }))
+    }
+
+    fn to_call_factory_tokens(&self) -> TokenStream {
+        let mut tokens = Vec::new();
+
+        if self.default_constructor {
+            let interface_tokens = quote! { ::winrt::IActivationFactory };
+            tokens.push(self.to_named_call_factory("IActivationFactory", &interface_tokens));
+        }
+
+        for interface in &self.interfaces {
+            if (interface.kind != InterfaceKind::Statics
+                && interface.kind != InterfaceKind::Composable)
+                || interface.methods.len() == 0
+            {
+                continue;
+            }
+
+            let interface_namespace =
+                to_namespace_tokens(&interface.name.namespace, &self.name.namespace);
+
+            let interface_name = format_ident(&interface.name.name);
+            let interface_tokens = quote! { #interface_namespace #interface_name };
+            tokens.push(self.to_named_call_factory(&interface.name.name, &interface_tokens));
+        }
+
+        TokenStream::from_iter(tokens)
+    }
+
+    fn to_named_call_factory(&self, method_name: &str, interface: &TokenStream) -> TokenStream {
+        let self_name = &self.name.tokens;
+        let method_name = format_ident(method_name);
+
+        quote! {
+            #[allow(non_snake_case)]
+            fn #method_name<R, F: FnOnce(&#interface) -> ::winrt::Result<R>>(
+                callback: F,
+            ) -> ::winrt::Result<R> {
+                static mut SHARED: ::winrt::FactoryCache<#self_name, #interface> =
+                    ::winrt::FactoryCache::new();
+                unsafe { SHARED.call(callback) }
+            }
+        }
     }
 
     fn type_name(&self, class_name: &TokenStream) -> TokenStream {
