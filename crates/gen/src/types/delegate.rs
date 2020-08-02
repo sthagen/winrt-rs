@@ -4,8 +4,7 @@ use crate::types::debug;
 use crate::types::*;
 use crate::TypeReader;
 
-use proc_macro2::TokenStream;
-use quote::quote;
+use squote::{quote, TokenStream};
 
 #[derive(Debug)]
 pub struct Delegate {
@@ -62,7 +61,7 @@ impl Delegate {
         let invoke_upcall = if let Some(return_type) = &self.method.return_type {
             if return_type.array {
                 let result = format_ident(&return_type.name);
-                let result_size = quote::format_ident!("array_size_{}", &return_type.name);
+                let result_size = squote::format_ident!("array_size_{}", &return_type.name);
 
                 quote! {
                     match ((*this).invoke)(#(#invoke_args,)*) {
@@ -97,6 +96,7 @@ impl Delegate {
 
         quote! {
             #[repr(transparent)]
+            #[derive(::std::clone::Clone, ::std::default::Default, ::std::cmp::PartialEq)]
             pub struct #definition where #constraints {
                 ptr: ::winrt::ComPtr<#name>,
                 #phantoms
@@ -111,14 +111,6 @@ impl Delegate {
                 type VTable = #abi_definition;
                 fn iid() -> ::winrt::Guid {
                     #guid
-                }
-            }
-            impl<#constraints> ::std::clone::Clone for #name {
-                fn clone(&self) -> Self {
-                    Self {
-                        ptr: self.ptr.clone(),
-                        #phantoms
-                    }
                 }
             }
             #[repr(C)]
@@ -144,19 +136,6 @@ impl Delegate {
                 }
             }
             #debug
-            impl<#constraints> ::std::default::Default for #name {
-                fn default() -> Self {
-                    Self {
-                        ptr: ::winrt::ComPtr::default(),
-                        #phantoms
-                    }
-                 }
-            }
-            impl<#constraints> ::std::cmp::PartialEq<Self> for #name {
-                fn eq(&self, other: &Self) -> bool {
-                    self.ptr == other.ptr
-                }
-            }
             #[repr(C)]
             struct #impl_definition where #constraints {
                 vtable: *const #abi_definition,
@@ -266,6 +245,6 @@ impl Delegate {
     }
 }
 
-fn format_impl_ident(name: &str) -> proc_macro2::Ident {
-    quote::format_ident!("impl_{}", name)
+fn format_impl_ident(name: &str) -> squote::Ident {
+    squote::format_ident!("impl_{}", name)
 }

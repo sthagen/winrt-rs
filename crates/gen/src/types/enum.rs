@@ -2,8 +2,7 @@ use crate::element_type::ElementType;
 use crate::types::*;
 use crate::{format_ident, TypeReader};
 
-use proc_macro2::TokenStream;
-use quote::{format_ident, quote};
+use squote::{format_ident, quote, TokenStream};
 
 #[derive(Debug)]
 pub struct Enum {
@@ -76,7 +75,7 @@ impl Enum {
 
         quote! {
             #[repr(transparent)]
-            #[derive(Copy, Clone, Default, Debug, Eq, PartialEq)]
+            #[derive(::std::marker::Copy, ::std::clone::Clone, ::std::default::Default, ::std::fmt::Debug, ::std::cmp::Eq, ::std::cmp::PartialEq)]
             pub struct #name {
                 value: #repr
             }

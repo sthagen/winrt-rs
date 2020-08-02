@@ -2,8 +2,7 @@ use crate::case::to_snake;
 use crate::tables::*;
 use crate::types::*;
 use crate::{format_ident, TypeReader};
-use proc_macro2::TokenStream;
-use quote::quote;
+use squote::{quote, TokenStream};
 
 #[derive(Debug)]
 pub struct Struct {
@@ -51,7 +50,7 @@ impl Struct {
 
         quote! {
             #[repr(C)]
-            #[derive(Clone, Default, Debug, PartialEq)]
+            #[derive(::std::clone::Clone, ::std::default::Default, ::std::fmt::Debug, ::std::cmp::PartialEq)]
             pub struct #name {
                 #(#fields),*
             }
