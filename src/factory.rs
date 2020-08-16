@@ -62,7 +62,7 @@ pub fn factory<C: RuntimeName, I: ComInterface + Default>() -> Result<I> {
 
     unsafe {
         // First attempt to get the activation factory via the OS.
-        let code = RoGetActivationFactory(name.get_abi(), &I::iid(), factory.set_abi() as _);
+        let code = RoGetActivationFactory(name.get_abi(), &I::IID, factory.set_abi() as _);
 
         // Treat any delay-load errors like standard errors, so that the heuristics
         // below can still load registration-free libraries on Windows versions below 10.
@@ -70,15 +70,15 @@ pub fn factory<C: RuntimeName, I: ComInterface + Default>() -> Result<I> {
 
         // If this fails because combase hasn't been loaded yet then load combase
         // automatically so that it "just works" for apartment-agnostic code.
-        if code == NOT_INITIALIZED {
+        if code == ErrorCode::CO_E_NOTINITIALIZED {
             let mut _cookie = std::ptr::null_mut();
 
-            // Won't get any delay-load errors here if we got NOT_INITIALIZED, so quiet the
+            // Won't get any delay-load errors here if we got CO_E_NOTINITIALIZED, so quiet the
             // warning from the #[must_use] on the returned Result<>.
             let _ = CoIncrementMTAUsage(&mut _cookie);
 
             // Now try a second time to get the activation factory via the OS.
-            code = RoGetActivationFactory(name.get_abi(), &I::iid(), factory.set_abi() as _)
+            code = RoGetActivationFactory(name.get_abi(), &I::IID, factory.set_abi() as _)
                 .unwrap_or_else(|code| code);
         }
 
@@ -165,6 +165,3 @@ impl Library {
         Library { handle }
     }
 }
-
-// Indicates that COM has not been initialized.
-const NOT_INITIALIZED: ErrorCode = ErrorCode(0x8004_01F0);

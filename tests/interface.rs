@@ -1,18 +1,10 @@
-winrt::import!(
-    dependencies
-        os
-    types
-        windows::foundation::{IStringable, Uri}
-);
-
+use winrt::foundation::{IStringable, Uri};
 use winrt::ComInterface;
 
 #[test]
 fn non_generic() -> winrt::Result<()> {
-    use windows::foundation::{IStringable, Uri};
-
     assert_eq!(
-        IStringable::iid(),
+        IStringable::IID,
         winrt::Guid::from("96369F54-8EB6-48F0-ABCE-C1B211E627C3")
     );
 

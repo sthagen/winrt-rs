@@ -81,9 +81,7 @@ unsafe impl AbiTransferable for HString {
 }
 
 unsafe impl RuntimeType for HString {
-    fn signature() -> String {
-        "string".to_owned()
-    }
+    const SIGNATURE: crate::ConstBuffer = crate::ConstBuffer::from_slice(b"string");
 }
 
 impl Default for HString {
@@ -182,6 +180,12 @@ impl PartialEq<str> for HString {
 impl PartialEq<&str> for HString {
     fn eq(&self, other: &&str) -> bool {
         self.as_wide().iter().copied().eq(other.encode_utf16())
+    }
+}
+
+impl PartialEq<HString> for &str {
+    fn eq(&self, other: &HString) -> bool {
+        other == self
     }
 }
 
