@@ -1,5 +1,4 @@
-use crate::type_namespaces::TypeNamespaces;
-use crate::types::Type;
+use crate::*;
 use rayon::prelude::*;
 use squote::TokenStream;
 
@@ -12,6 +11,46 @@ pub struct TypeTree {
 }
 
 impl TypeTree {
+    pub fn from_limits(reader: &winmd::TypeReader, limits: &TypeLimits) -> Self {
+        let mut tree = TypeTree::default();
+        let mut set = std::collections::BTreeSet::new();
+
+        for limit in limits.limits() {
+            match &limit.limit {
+                TypeLimit::All => {
+                    for def in reader.types[&limit.namespace].values() {
+                        tree.insert2(reader, &mut set, *def);
+                    }
+                }
+                TypeLimit::Some(types) => {
+                    let namespace = &reader.types[&limit.namespace];
+                    for name in types {
+                        tree.insert2(reader, &mut set, namespace[name]);
+                    }
+                }
+            }
+        }
+
+        tree
+    }
+
+    fn insert2(
+        &mut self,
+        reader: &winmd::TypeReader,
+        set: &mut std::collections::BTreeSet<winmd::TypeDef>,
+        def: winmd::TypeDef,
+    ) {
+        if set.insert(def) {
+            let t = Type::from_type_def(reader, def);
+
+            for def in t.dependencies() {
+                self.insert2(reader, set, def);
+            }
+
+            self.insert(t.name().namespace.clone(), t);
+        }
+    }
+
     /// Insert a [`Type`] into [`TypeTree`]
     ///
     /// This recursively searchs the tree for an entry corresponding to the namespace
@@ -51,23 +90,21 @@ impl TypeTree {
     }
 
     /// Turn the tree into a token stream for code generation
-    pub fn to_tokens<'a>(&'a self) -> impl ParallelIterator<Item = TokenStream> + 'a {
+    pub fn gen<'a>(&'a self) -> impl ParallelIterator<Item = TokenStream> + 'a {
         self.types
             .par_iter()
-            .map(|t| t.to_tokens())
-            .chain(self.namespaces.to_tokens())
+            .map(|t| t.gen())
+            .chain(self.namespaces.gen())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::TypeReader;
-    use crate::TypeStage;
-    use crate::{NamespaceTypes, TypeLimit, TypeLimits};
+    use crate::{NamespaceTypes, TypeLimit, TypeLimits, TypeTree};
 
     #[test]
     fn test_dependency_inclusion() {
-        let reader = &TypeReader::from_os();
+        let reader = &winmd::TypeReader::from_os();
         let mut limits = TypeLimits::new(reader);
         limits
             .insert(NamespaceTypes {
@@ -81,11 +118,10 @@ mod tests {
                 limit: TypeLimit::All,
             })
             .unwrap();
-        let stage = TypeStage::from_limits(reader, &limits);
 
         // Since Windows.Foundation depends on Windows.Foundation.Collections and
         // Windows.UI doesn't have dependencies, we should only see those namespaces.
-        let root = stage.into_tree();
+        let root = TypeTree::from_limits(reader, &limits);
 
         // There is one root namespace.
         assert!(root.namespaces.0.len() == 1);

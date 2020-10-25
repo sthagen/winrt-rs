@@ -1,47 +1,49 @@
-mod blob;
-mod case;
-mod codes;
-mod element_type;
-mod file;
-mod flags;
-mod row;
-mod tables;
+mod class;
+mod debug;
+mod delegate;
+mod r#enum;
+mod format_ident;
+mod futures;
+mod interface;
+mod interface_kind;
+mod iterator;
+mod method;
+mod method_kind;
+mod namespace;
+mod param;
+mod required_interface;
+mod r#struct;
+mod to_snake;
+mod traits;
+mod r#type;
+mod type_guid;
+mod type_kind;
 mod type_limits;
+mod type_name;
 mod type_namespaces;
-mod type_reader;
-mod type_stage;
 mod type_tree;
-mod types;
 
-pub mod dependencies;
-pub mod load_winmd;
-pub use file::WinmdFile;
-pub use tables::AttributeArg;
-pub use type_limits::{NamespaceTypes, TypeLimit, TypeLimits};
-pub use type_reader::TypeReader;
-pub use type_stage::TypeStage;
-pub use type_tree::TypeTree;
-
-fn format_ident(name: &str) -> squote::Ident {
-    if name == "Self" {
-        squote::format_ident!("{}_", name)
-    } else {
-        // keywords list based on https://doc.rust-lang.org/reference/keywords.html
-        match name {
-            "abstract" | "as" | "become" | "box" | "break" | "const" | "continue" | "crate"
-            | "do" | "else" | "enum" | "extern" | "false" | "final" | "fn" | "for" | "if"
-            | "impl" | "in" | "let" | "loop" | "macro" | "match" | "mod" | "move" | "mut"
-            | "override" | "priv" | "pub" | "ref" | "return" | "Self" | "self" | "static"
-            | "struct" | "super" | "trait" | "true" | "type" | "typeof" | "unsafe" | "unsized"
-            | "use" | "virtual" | "where" | "while" | "yield" | "try" | "async" | "await"
-            | "dyn" => squote::format_ident!("r#{}", name),
-            _ => squote::format_ident!("{}", name),
-        }
-    }
-}
-
-#[cfg(target_pointer_width = "64")]
-const SYSTEM32: &str = "System32";
-
-#[cfg(target_pointer_width = "32")]
-const SYSTEM32: &str = "SysNative";
+pub use class::*;
+pub use debug::*;
+pub use delegate::*;
+pub use format_ident::*;
+pub use futures::*;
+pub use interface::*;
+pub use interface_kind::*;
+pub use iterator::*;
+pub use method::*;
+pub use method_kind::*;
+pub use namespace::*;
+pub use param::*;
+pub use r#enum::*;
+pub use r#struct::*;
+pub use r#type::*;
+pub use required_interface::*;
+pub use to_snake::*;
+pub use traits::*;
+pub use type_guid::*;
+pub use type_kind::*;
+pub use type_limits::*;
+pub use type_name::*;
+pub use type_namespaces::*;
+pub use type_tree::*;
