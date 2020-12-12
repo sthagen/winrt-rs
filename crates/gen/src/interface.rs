@@ -1,6 +1,5 @@
 use crate::*;
 use squote::{quote, TokenStream};
-use std::iter::FromIterator;
 
 #[derive(Debug)]
 pub struct Interface {
@@ -10,19 +9,20 @@ pub struct Interface {
 }
 
 impl Interface {
-    pub fn from_type_name(reader: &winmd::TypeReader, name: TypeName) -> Self {
-        let guid = TypeGuid::from_type_def(reader, name.def);
+    pub fn from_type_name(name: TypeName) -> Self {
+        let guid = TypeGuid::from_type_def(&name.def);
         let mut interfaces = Vec::new();
 
         add_type(
             &mut interfaces,
-            reader,
-            name.def,
+            &name.def,
             &name.namespace,
             InterfaceKind::Default,
         );
 
-        add_dependencies(&mut interfaces, reader, &name, &name.namespace, true);
+        add_dependencies(&mut interfaces, &name, &name.namespace, true);
+
+        rename_collisions(&mut interfaces);
 
         Self {
             name,
@@ -54,10 +54,6 @@ impl Interface {
             .unwrap()
     }
 
-    pub fn gen_vtable_initializer(&self) -> TokenStream {
-        panic!();
-    }
-
     pub fn gen(&self) -> TokenStream {
         let definition = self.name.gen_definition();
         let abi_definition = self.name.gen_abi_definition();
@@ -69,55 +65,70 @@ impl Interface {
         let guid = self.name.gen_guid(&self.guid);
         let signature = self.name.gen_signature(&format!("{{{:#?}}}", &self.guid));
 
-        let conversions = TokenStream::from_iter(
-            self.interfaces
-                .iter()
-                .filter(|interface| interface.kind != InterfaceKind::Default)
-                .map(|interface| interface.gen_conversions(&name, &constraints)),
-        );
+        let conversions = self
+            .interfaces
+            .iter()
+            .filter(|interface| interface.kind != InterfaceKind::Default)
+            .map(|interface| interface.gen_conversions(&name, &constraints));
 
         let methods = gen_method(&self.interfaces);
-        let abi_methods = default_interface.gen_abi_method();
+
+        let abi_methods = default_interface.methods.iter().map(|method| {
+            let signature = method.gen_abi();
+
+            quote! {
+                pub unsafe extern "system" fn #signature
+            }
+        });
+
         let iterator = gen_iterator(&self.name, &self.interfaces);
         let (async_get, future) = gen_async(&self.name, &self.interfaces);
-        let debug = gen_debug(&self.name, &self.interfaces);
 
         quote! {
             #[repr(transparent)]
-            #[derive(::std::clone::Clone, ::std::default::Default, ::std::cmp::PartialEq)]
-            pub struct #definition where #constraints {
-                ptr: ::winrt::ComPtr<#name>,
-                #phantoms
+            pub struct #definition(::winrt::Object, #phantoms) where #constraints;
+            impl<#constraints> ::std::clone::Clone for #name {
+                fn clone(&self) -> Self {
+                    Self(self.0.clone(), #phantoms)
+                }
             }
+            impl<#constraints> ::std::fmt::Debug for #name {
+                fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                    write!(f, "{:?}", self.0)
+                }
+            }
+            impl<#constraints> ::std::cmp::PartialEq for #name {
+                fn eq(&self, other: &Self) -> bool {
+                    self.0 == other.0
+                }
+            }
+            impl<#constraints> ::std::cmp::Eq for #name {}
             impl<#constraints> #name {
                 #methods
                 #async_get
             }
-            unsafe impl<#constraints> ::winrt::ComInterface for #name {
-                type VTable = #abi_definition;
+            unsafe impl<#constraints> ::winrt::Interface for #name {
+                type Vtable = #abi_definition;
                 const IID: ::winrt::Guid = #guid;
             }
             #[repr(C)]
-            pub struct #abi_definition where #constraints {
-                pub inspectable: ::winrt::abi_IInspectable,
-                #abi_methods
+            pub struct #abi_definition(
+                pub unsafe extern "system" fn(this: ::winrt::RawPtr, iid: &::winrt::Guid, interface: *mut ::winrt::RawPtr) -> ::winrt::ErrorCode,
+                pub unsafe extern "system" fn(this: ::winrt::RawPtr) -> u32,
+                pub unsafe extern "system" fn(this: ::winrt::RawPtr) -> u32,
+                pub unsafe extern "system" fn(this: ::winrt::RawPtr, count: *mut u32, values: *mut *mut ::winrt::Guid) -> ::winrt::ErrorCode,
+                pub unsafe extern "system" fn(this: ::winrt::RawPtr, value: *mut ::winrt::RawPtr) -> ::winrt::ErrorCode,
+                pub unsafe extern "system" fn(this: ::winrt::RawPtr, value: *mut i32) -> ::winrt::ErrorCode,
+                #(#abi_methods,)*
                 #phantoms
-            }
+            ) where #constraints;
             unsafe impl<#constraints> ::winrt::RuntimeType for #name {
+                type DefaultType = ::std::option::Option<Self>;
                 const SIGNATURE: ::winrt::ConstBuffer = { #signature };
-            }
-            unsafe impl<#constraints> ::winrt::AbiTransferable for #name {
-                type Abi = ::winrt::RawComPtr<Self>;
-                fn get_abi(&self) -> Self::Abi {
-                    <::winrt::ComPtr<#name> as ::winrt::AbiTransferable>::get_abi(&self.ptr)
-                }
-                fn set_abi(&mut self) -> *mut Self::Abi {
-                    <::winrt::ComPtr<#name> as ::winrt::AbiTransferable>::set_abi(&mut self.ptr)
-                }
             }
             impl<#constraints> ::std::convert::From<#name> for ::winrt::Object {
                 fn from(value: #name) -> Self {
-                    unsafe { ::std::mem::transmute(value) }
+                    value.0
                 }
             }
             impl<#constraints> ::std::convert::From<&#name> for ::winrt::Object {
@@ -125,6 +136,7 @@ impl Interface {
                     ::std::convert::From::from(::std::clone::Clone::clone(value))
                 }
             }
+
             impl<'a, #constraints> ::std::convert::Into<::winrt::Param<'a, ::winrt::Object>> for #name {
                 fn into(self) -> ::winrt::Param<'a, ::winrt::Object> {
                     ::winrt::Param::Owned(::std::convert::Into::<::winrt::Object>::into(self))
@@ -135,8 +147,7 @@ impl Interface {
                     ::winrt::Param::Owned(::std::convert::Into::<::winrt::Object>::into(::std::clone::Clone::clone(self)))
                 }
             }
-            #debug
-            #conversions
+            #(#conversions)*
             #iterator
             #future
         }
@@ -148,13 +159,13 @@ mod tests {
     use crate::*;
 
     fn interface((namespace, type_name): (&str, &str)) -> Interface {
-        let reader = &winmd::TypeReader::from_os();
+        let reader = &winmd::TypeReader::from_build();
         let t = reader.resolve_type_def((namespace, type_name));
-        let t = Type::from_type_def(reader, t);
+        let t = TypeDefinition::from_type_def(&t);
 
         match t {
-            Type::Interface(t) => t,
-            _ => panic!("Type not an interface"),
+            TypeDefinition::Interface(t) => t,
+            _ => panic!("TypeDefinition not an interface"),
         }
     }
 

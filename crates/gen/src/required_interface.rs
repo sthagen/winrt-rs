@@ -1,7 +1,6 @@
 use crate::*;
 use squote::{quote, TokenStream};
 use std::collections::*;
-use std::iter::FromIterator;
 
 #[derive(Debug)]
 pub struct RequiredInterface {
@@ -10,56 +9,60 @@ pub struct RequiredInterface {
     pub kind: InterfaceKind,
 }
 
+impl PartialEq for RequiredInterface {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+impl Eq for RequiredInterface {}
+
+impl PartialOrd for RequiredInterface {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for RequiredInterface {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.name.cmp(&other.name)
+    }
+}
+
 impl RequiredInterface {
     fn from_type_def(
-        reader: &winmd::TypeReader,
-        def: winmd::TypeDef,
-        calling_namespace: &str,
+        def: &winmd::TypeDef,
+        calling_namespace: &'static str,
         kind: InterfaceKind,
     ) -> Self {
-        let name = TypeName::from_type_def(reader, def, calling_namespace);
-
-        let mut methods = def
-            .methods(reader)
-            .map(|method| {
-                Method::from_method_def(reader, method, &name.generics, calling_namespace)
-            })
-            .collect();
-
-        rename_collisions(&mut methods);
-
-        Self {
-            name,
-            methods,
-            kind,
-        }
+        let name = TypeName::from_type_def(def, calling_namespace);
+        Self::from_type_name_and_kind(name, kind, calling_namespace)
     }
 
     fn from_type_name_and_kind(
-        reader: &winmd::TypeReader,
         name: TypeName,
         kind: InterfaceKind,
-        calling_namespace: &str,
+        calling_namespace: &'static str,
     ) -> Self {
-        let mut methods = name
+        let methods = name
             .def
-            .methods(reader)
-            .map(|method| {
-                Method::from_method_def(reader, method, &name.generics, calling_namespace)
+            .methods()
+            .enumerate()
+            .map(|(count, method)| {
+                Method::from_method_def(
+                    &method,
+                    (count + 6) as u32,
+                    &name.generics,
+                    calling_namespace,
+                )
             })
             .collect();
-
-        rename_collisions(&mut methods);
 
         Self {
             name,
             methods,
             kind,
         }
-    }
-
-    pub fn gen_abi_method(&self) -> TokenStream {
-        TokenStream::from_iter(self.methods.iter().map(|method| method.gen_abi(&self.name)))
     }
 
     pub fn gen_conversions(&self, from: &TokenStream, constraints: &TokenStream) -> TokenStream {
@@ -99,7 +102,7 @@ impl RequiredInterface {
                     }
                     impl<#constraints> ::std::convert::From<&#from> for #into {
                         fn from(value: &#from) -> Self {
-                            <#from as ::winrt::ComInterface>::query(value)
+                            ::winrt::Interface::cast(value).unwrap()
                         }
                     }
                     impl<'a, #constraints> ::std::convert::Into<::winrt::Param<'a, #into>> for #from {
@@ -121,13 +124,11 @@ impl RequiredInterface {
 
 pub fn add_type(
     vec: &mut Vec<RequiredInterface>,
-    reader: &winmd::TypeReader,
-    def: winmd::TypeDef,
-    calling_namespace: &str,
+    def: &winmd::TypeDef,
+    calling_namespace: &'static str,
     kind: InterfaceKind,
 ) {
     vec.push(RequiredInterface::from_type_def(
-        reader,
         def,
         calling_namespace,
         kind,
@@ -136,17 +137,16 @@ pub fn add_type(
 
 pub fn add_dependencies(
     vec: &mut Vec<RequiredInterface>,
-    reader: &winmd::TypeReader,
     name: &TypeName,
-    calling_namespace: &str,
+    calling_namespace: &'static str,
     strip_default: bool,
 ) {
-    for required in name.def.interfaces(reader) {
-        let is_default = required.is_default(reader);
-        let required = required.interface(reader);
+    for required in name.def.interfaces() {
+        let is_default = required.is_default();
+        let required = required.interface();
 
         let required_name =
-            TypeName::from_type_def_or_ref(reader, required, &name.generics, calling_namespace);
+            TypeName::from_type_def_or_ref(&required, &name.generics, calling_namespace);
 
         if let Some(index) = vec.iter().position(|i| i.name == required_name) {
             if !strip_default && vec[index].kind == InterfaceKind::NonDefault && is_default {
@@ -159,16 +159,9 @@ pub fn add_dependencies(
                 InterfaceKind::NonDefault
             };
 
-            add_dependencies(
-                vec,
-                reader,
-                &required_name,
-                calling_namespace,
-                strip_default,
-            );
+            add_dependencies(vec, &required_name, calling_namespace, strip_default);
 
             vec.push(RequiredInterface::from_type_name_and_kind(
-                reader,
                 required_name,
                 kind,
                 calling_namespace,
@@ -178,40 +171,30 @@ pub fn add_dependencies(
 }
 
 pub fn gen_method(interfaces: &Vec<RequiredInterface>) -> TokenStream {
-    let mut tokens = Vec::new();
-    let mut names = BTreeSet::new();
+    let mut tokens = TokenStream::new();
 
     for interface in interfaces {
         for method in &interface.methods {
-            // If there are any collisions just drop and caller can QI for the actual interface.
-            if names.contains(&method.name) {
-                continue;
-            }
-
-            names.insert(&method.name);
-
-            tokens.push(match interface.kind {
-                InterfaceKind::Default => method.gen_default(),
-                InterfaceKind::NonDefault | InterfaceKind::Overrides => {
-                    method.gen_non_default(interface)
-                }
-                InterfaceKind::Statics => method.gen_static(interface),
-                InterfaceKind::Composable => method.gen_composable(interface),
-            });
+            tokens.combine(&method.gen_method(&interface.name, interface.kind));
         }
     }
 
-    TokenStream::from_iter(tokens)
+    tokens
 }
 
-fn rename_collisions(methods: &mut Vec<Method>) {
-    let mut names = BTreeSet::new();
+pub fn rename_collisions(interfaces: &mut Vec<RequiredInterface>) {
+    // First sort interfaces to ensure a stable method renaming across versions.
+    // TODO: Once fast abi support is added, sorting here will be unnecessary.
+    // https://github.com/microsoft/winrt-rs/issues/235
+    interfaces.sort();
 
-    for method in methods {
-        if names.contains(&method.name) {
-            method.name = format!("{}2", method.name);
-        } else {
-            names.insert(&method.name);
+    let mut count = BTreeMap::new();
+
+    for interface in interfaces {
+        for method in &mut interface.methods {
+            let count = count.entry(&method.name).or_insert(0);
+            *count += 1;
+            method.overload = *count;
         }
     }
 }

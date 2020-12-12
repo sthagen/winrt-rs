@@ -1,5 +1,5 @@
 use crate::*;
-use squote::{quote, TokenStream};
+use squote::{format_ident, quote, Ident, Literal, TokenStream};
 use std::iter::FromIterator;
 
 #[derive(Debug)]
@@ -7,17 +7,19 @@ pub struct Method {
     pub name: String,
     pub params: Vec<Param>,
     pub return_type: Option<Param>,
+    pub vtable_offset: u32,
+    pub overload: u32,
 }
 
 impl Method {
     pub fn from_method_def(
-        reader: &winmd::TypeReader,
-        method: winmd::MethodDef,
+        method: &winmd::MethodDef,
+        vtable_offset: u32,
         generics: &[TypeKind],
-        calling_namespace: &str,
+        calling_namespace: &'static str,
     ) -> Method {
-        let name = if method.flags(reader).special() {
-            let name = method.name(reader);
+        let name = if method.flags().special() {
+            let name = method.name();
 
             if name.starts_with("get") {
                 to_snake(&name[4..], MethodKind::Get)
@@ -32,10 +34,10 @@ impl Method {
                 "invoke".to_owned()
             }
         } else {
-            Method::name(reader, method)
+            Method::name(method)
         };
 
-        let mut blob = method.sig(reader);
+        let mut blob = method.sig();
 
         if blob.read_unsigned() & 0x10 != 0 {
             blob.read_unsigned();
@@ -50,36 +52,43 @@ impl Method {
         } else {
             let name = "result__".to_owned();
             let array = blob.peek_unsigned().0 == 0x1D;
-            let kind = TypeKind::from_blob(&mut blob, generics, calling_namespace);
+            let t = Type::from_blob(&mut blob, generics, calling_namespace);
             let input = false;
             let by_ref = true;
+            let is_const = false;
             Some(Param {
                 name,
-                kind,
+                kind: t.kind,
                 array,
                 input,
                 by_ref,
+                is_const,
             })
         };
 
         let mut params = Vec::with_capacity(param_count as usize);
 
-        for param in method.params(reader) {
-            if return_type.is_none() || param.sequence(reader) != 0 {
-                let name = to_snake(param.name(reader), MethodKind::Normal);
-                let input = param.flags(reader).input();
+        for param in method.params() {
+            if return_type.is_none() || param.sequence() != 0 {
+                let name = to_snake(param.name(), MethodKind::Normal);
+                let input = !param.flags().output();
 
-                blob.read_modifiers();
+                let is_const = blob
+                    .read_modifiers()
+                    .iter()
+                    .any(|def| def.name() == ("System.Runtime.CompilerServices", "IsConst"));
+
                 let by_ref = blob.read_expected(0x10);
                 let array = blob.peek_unsigned().0 == 0x1D;
-                let kind = TypeKind::from_blob(&mut blob, generics, calling_namespace);
+                let t = Type::from_blob(&mut blob, generics, calling_namespace);
 
                 params.push(Param {
                     name,
-                    kind,
+                    kind: t.kind,
                     array,
                     input,
                     by_ref,
+                    is_const,
                 });
             }
         }
@@ -88,6 +97,8 @@ impl Method {
             name,
             params,
             return_type,
+            vtable_offset,
+            overload: 1,
         }
     }
 
@@ -99,165 +110,170 @@ impl Method {
             .collect()
     }
 
-    fn name(reader: &winmd::TypeReader, method: winmd::MethodDef) -> String {
-        if let Some(attribute) =
-            method.find_attribute(reader, ("Windows.Foundation.Metadata", "OverloadAttribute"))
-        {
-            for (_, arg) in attribute.args(reader) {
-                if let winmd::AttributeArg::String(name) = arg {
-                    return to_snake(&name, MethodKind::Normal);
+    fn name(method: &winmd::MethodDef) -> String {
+        for attribute in method.attributes() {
+            if attribute.name() == ("Windows.Foundation.Metadata", "OverloadAttribute") {
+                for (_, arg) in attribute.args() {
+                    if let winmd::AttributeArg::String(name) = arg {
+                        return to_snake(&name, MethodKind::Normal);
+                    }
                 }
             }
         }
 
-        to_snake(method.name(reader), MethodKind::Normal)
+        to_snake(method.name(), MethodKind::Normal)
     }
 
-    pub fn gen_abi(&self, self_name: &TypeName) -> TokenStream {
-        let type_name = self_name.gen();
-        let name = format_ident(&self.name);
-        let params = TokenStream::from_iter(
-            self.params
-                .iter()
-                .chain(self.return_type.iter())
-                .map(|param| param.gen_abi()),
-        );
-
-        quote! {
-            pub #name: unsafe extern "system" fn(::winrt::NonNullRawComPtr<#type_name>, #params) -> ::winrt::ErrorCode,
-        }
-    }
-
-    pub fn gen_abi_impl(&self, self_name: &TypeName) -> TokenStream {
-        let type_name = self_name.gen();
-        let name = format_ident(&self.name);
+    pub fn gen_abi(&self) -> TokenStream {
         let params = self
             .params
             .iter()
             .chain(self.return_type.iter())
-            .map(|param| {
-                let abi = param.gen_abi();
-                quote! { #abi }
-            });
+            .map(|param| param.gen_abi());
 
         quote! {
-            unsafe extern "system" fn #name(this: ::winrt::NonNullRawComPtr<#type_name>, #(#params)*) -> ::winrt::ErrorCode
+            (this: ::winrt::RawPtr, #(#params),*) -> ::winrt::ErrorCode
         }
     }
 
-    pub fn gen_binding_abi_impl(&self, self_name: &TypeName) -> TokenStream {
-        let type_name = self_name.gen_binding();
-        let name = format_ident(&self.name);
-        let params = self
-            .params
-            .iter()
-            .chain(self.return_type.iter())
-            .map(|param| {
-                let abi = param.gen_abi();
-                quote! { #abi }
-            });
+    pub fn gen_method(&self, interface: &TypeName, kind: InterfaceKind) -> TokenStream {
+        // Composable interface methods drop their two trailing parameters when not aggregating
+        // and forms the "default constructor" that projects as a "new" method in Rust.
+        let method_name = if kind == InterfaceKind::Composable && self.params.len() == 2 {
+            format_ident!("new")
+        } else {
+            self.gen_name()
+        };
 
-        quote! {
-            unsafe extern "system" fn #name(this: ::winrt::NonNullRawComPtr<#type_name>, #(#params)*) -> ::winrt::ErrorCode
-        }
-    }
+        let params = if kind == InterfaceKind::Composable {
+            &self.params[..self.params.len() - 2]
+        } else {
+            &self.params
+        };
 
-    pub fn gen_default(&self) -> TokenStream {
-        let method_name = format_ident(&self.name);
-        let params = gen_param(&self.params);
-        let constraints = gen_constraint(&self.params);
+        let constraints = gen_constraint(params);
+        let args = params.iter().map(|param| param.gen_abi_arg());
+        let params = gen_param(params);
 
-        let args = TokenStream::from_iter(self.params.iter().map(|param| param.gen_abi_arg()));
+        // The ABI obviously still has the two composable parameters. Here we just pass the default in and out
+        // arguments to ensure the call succeeds in the non-aggregating case.
+        let composable_args = if kind == InterfaceKind::Composable {
+            quote! {
+                ::std::ptr::null_mut(), ::winrt::Abi::set_abi(&mut ::std::option::Option::<::winrt::Object>::None),
+            }
+        } else {
+            TokenStream::new()
+        };
 
-        if let Some(return_type) = &self.return_type {
+        let return_type_tokens = if let Some(return_type) = &self.return_type {
+            return_type.gen_return()
+        } else {
+            quote! { () }
+        };
+
+        let vtable_offset = Literal::u32_unsuffixed(self.vtable_offset);
+
+        let vcall = if let Some(return_type) = &self.return_type {
             let return_arg = return_type.gen_abi_return_arg();
-            let return_type = return_type.gen_return();
 
+            if return_type.array {
+                quote! {
+                    let mut result__: #return_type_tokens = ::std::mem::zeroed();
+                    (::winrt::Interface::vtable(this).#vtable_offset)(::winrt::Abi::abi(this), #(#args)* #composable_args #return_arg)
+                        .and_then(|| result__ )
+                }
+            } else {
+                quote! {
+                    let mut result__: <#return_type_tokens as ::winrt::Abi>::Abi = ::std::mem::zeroed();
+                        (::winrt::Interface::vtable(this).#vtable_offset)(::winrt::Abi::abi(this), #(#args)* #composable_args #return_arg)
+                            .from_abi::<#return_type_tokens>(result__ )
+                }
+            }
+        } else {
             quote! {
-                pub fn #method_name<#constraints>(&self, #params) -> ::winrt::Result<#return_type> {
-                    let this = <Self as ::winrt::AbiTransferable>::get_abi(self).expect("The `this` pointer was null when calling method");
+                (::winrt::Interface::vtable(this).#vtable_offset)(::winrt::Abi::abi(this), #(#args)* #composable_args).ok()
+            }
+        };
+
+        match kind {
+            InterfaceKind::Default => quote! {
+                pub fn #method_name<#constraints>(&self, #params) -> ::winrt::Result<#return_type_tokens> {
+                    let this = self;
                     unsafe {
-                        let mut result__: #return_type = ::std::mem::zeroed();
-                        (this.vtable().#method_name)(this, #args #return_arg)
-                            .and_then(|| result__ )
+                        #vcall
+                    }
+                }
+            },
+            InterfaceKind::NonDefault | InterfaceKind::Overrides => {
+                let interface = interface.gen();
+                quote! {
+                    pub fn #method_name<#constraints>(&self, #params) -> ::winrt::Result<#return_type_tokens> {
+                        let this = &::winrt::Interface::cast::<#interface>(self).unwrap();
+                        unsafe {
+                            #vcall
+                        }
                     }
                 }
             }
-        } else {
-            quote! {
-                pub fn #method_name<#constraints>(&self, #params) -> ::winrt::Result<()> {
-                    let this = <Self as ::winrt::AbiTransferable>::get_abi(self).expect("The `this` pointer was null when calling method");
-                    unsafe {
-                        (this.vtable().#method_name)(this, #args).ok()
+            InterfaceKind::Statics | InterfaceKind::Composable => {
+                let interface = interface.gen();
+                quote! {
+                    pub fn #method_name<#constraints>(#params) -> ::winrt::Result<#return_type_tokens> {
+                        Self::#interface(|this| unsafe { #vcall })
                     }
                 }
             }
         }
     }
 
-    pub fn gen_non_default(&self, interface: &RequiredInterface) -> TokenStream {
-        let method_name = format_ident(&self.name);
-        let params = gen_param(&self.params);
-        let constraints = gen_constraint(&self.params);
-        let args = gen_arg(&self.params);
-        let interface = interface.name.gen();
-
-        let return_type = if let Some(return_type) = &self.return_type {
-            return_type.gen_return()
+    fn gen_name(&self) -> Ident {
+        if self.overload > 1 {
+            format_ident!("{}{}", &self.name, self.overload)
         } else {
-            quote! { () }
-        };
-
-        quote! {
-            pub fn #method_name<#constraints>(&self, #params) -> ::winrt::Result<#return_type> {
-                <#interface as ::std::convert::From<&Self>>::from(self).#method_name(#args)
-            }
+            format_ident(&self.name)
         }
     }
 
-    pub fn gen_static(&self, interface: &RequiredInterface) -> TokenStream {
-        let method_name = format_ident(&self.name);
-        let params = gen_param(&self.params);
-        let constraints = gen_constraint(&self.params);
-        let args = gen_arg(&self.params);
-        let interface = format_ident(&interface.name.name);
+    pub fn gen_upcall(&self, inner: TokenStream, relative: bool) -> TokenStream {
+        let invoke_args = self
+            .params
+            .iter()
+            .map(|param| param.gen_invoke_arg(relative));
 
-        let return_type = if let Some(return_type) = &self.return_type {
-            return_type.gen_return()
-        } else {
-            quote! { () }
-        };
+        match &self.return_type {
+            Some(return_type) if return_type.array => {
+                let result = format_ident(&return_type.name);
+                let result_size = squote::format_ident!("array_size_{}", &return_type.name);
 
-        quote! {
-            pub fn #method_name<#constraints>(#params) -> ::winrt::Result<#return_type> {
-                Self::#interface(|f| f.#method_name(#args))
-            }
-        }
-    }
-
-    pub fn gen_composable(&self, interface: &RequiredInterface) -> TokenStream {
-        let method_name = format_ident(&self.name);
-        let interface = format_ident(&interface.name.name);
-
-        if self.params.len() == 2 {
-            // For non-aggregation scenarios this is just a default constructor, hence the
-            // "new" method name in line with non-composable default constructors.
-            quote! {
-                pub fn new() -> ::winrt::Result<Self> {
-                    Self::#interface(|f| f.#method_name(::winrt::Object::default(), &mut ::winrt::Object::default()))
+                quote! {
+                    match #inner(#(#invoke_args,)*) {
+                        ::std::result::Result::Ok(ok__) => {
+                            let (ok_data__, ok_data_len__) = ok__.into_abi();
+                            *#result = ok_data__;
+                            *#result_size = ok_data_len__;
+                            ::winrt::ErrorCode(0)
+                        }
+                        ::std::result::Result::Err(err) => err.into()
+                    }
                 }
             }
-        } else {
-            let params = &self.params[..self.params.len() - 2];
-            let constraints = gen_constraint(params);
-            let args = gen_arg(params);
-            let params = gen_param(params);
+            Some(return_type) => {
+                let return_name = format_ident(&return_type.name);
 
-            quote! {
-                pub fn #method_name<#constraints>(#params) -> ::winrt::Result<Self> {
-                    Self::#interface(|f| f.#method_name(#args ::winrt::Object::default(), &mut ::winrt::Object::default()))
+                quote! {
+                    match #inner(#(#invoke_args,)*) {
+                        ::std::result::Result::Ok(ok__) => {
+                            *#return_name = ::std::mem::transmute_copy(&ok__);
+                            ::std::mem::forget(ok__);
+                            ::winrt::ErrorCode(0)
+                        }
+                        ::std::result::Result::Err(err) => err.into()
+                    }
                 }
             }
+            None => quote! {
+                #inner(#(#invoke_args,)*).into()
+            },
         }
     }
 }
@@ -271,13 +287,6 @@ fn gen_param(params: &[Param]) -> TokenStream {
     )
 }
 
-fn gen_arg(params: &[Param]) -> TokenStream {
-    TokenStream::from_iter(params.iter().map(|param| {
-        let name = format_ident(&param.name);
-        quote! { #name, }
-    }))
-}
-
 fn gen_constraint(params: &[Param]) -> TokenStream {
     let mut tokens = Vec::new();
 
@@ -286,7 +295,7 @@ fn gen_constraint(params: &[Param]) -> TokenStream {
             continue;
         }
 
-        match param.kind {
+        match &param.kind {
             TypeKind::String
             | TypeKind::Object
             | TypeKind::Guid
@@ -315,12 +324,12 @@ mod tests {
     use crate::*;
 
     fn method((namespace, type_name): (&str, &str), method_name: &str) -> Method {
-        let reader = &winmd::TypeReader::from_os();
+        let reader = &winmd::TypeReader::from_build();
         let def = reader.resolve_type_def((namespace, type_name));
 
-        let t = match Type::from_type_def(reader, def) {
-            Type::Interface(t) => t,
-            _ => panic!("Type not an interface"),
+        let t = match TypeDefinition::from_type_def(&def) {
+            TypeDefinition::Interface(t) => t,
+            _ => panic!("TypeDefinition not an interface"),
         };
 
         for interface in t.interfaces {

@@ -1,6 +1,6 @@
 [package]
 name = "winrt"
-version = "0.7.2"
+version = "0.8.0"
 authors = ["Microsoft"]
 edition = "2018"
 license = "MIT"
@@ -10,12 +10,13 @@ documentation = "https://docs.rs/winrt"
 readme = "README.md"
 
 [dependencies]
-winrt-macros = { path = "crates/macros",  version = "0.7.2" }
+winrt-macros = { path = "crates/macros",  version = "0.8.0" }
+winrt-gen = { path = "crates/gen",  version = "0.8.0" }
 const-sha1 = "0.2"
-winmd = "0.5"
+winmd = { path = "crates/winmd",  version = "0.8.0" }
 
 [build-dependencies]
-winrt-macros = { path = "crates/macros",  version = "0.7.2" }
+winrt-macros = { path = "crates/macros",  version = "0.8.0" }
 
 [dev-dependencies]
 doc-comment = "0.3"
@@ -25,13 +26,8 @@ winrt-gen = { path = "crates/gen" }
 members = [
     "crates/*",
     "examples/*",
-    "integration-tests"
 ]
 
 [package.metadata.docs.rs]
 default-target = "x86_64-pc-windows-msvc"
 targets = ["x86_64-pc-windows-msvc", "i686-pc-windows-msvc"]
-
-[package.metadata.winrt.dependencies]
-"Microsoft.Windows.SDK.Contracts" = "10.0.19041.1"
-"KennyKerr.Windows.TestWinRT" = "1.0.21"

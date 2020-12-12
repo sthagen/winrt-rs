@@ -2,7 +2,6 @@ use crate::*;
 use squote::{quote, Literal, TokenStream};
 use std::iter::FromIterator;
 
-/// A WinRT Class
 #[derive(Debug)]
 pub struct Class {
     pub name: TypeName,
@@ -14,53 +13,54 @@ pub struct Class {
 }
 
 impl Class {
-    pub fn from_type_name(reader: &winmd::TypeReader, name: TypeName) -> Self {
+    pub fn from_type_name(name: TypeName) -> Self {
         let mut interfaces = Vec::new();
-        add_dependencies(&mut interfaces, reader, &name, &name.namespace, false);
+        add_dependencies(&mut interfaces, &name, &name.namespace, false);
         let mut bases = Vec::new();
         let mut base = name.def;
 
         let signature = if interfaces.iter().any(|i| i.kind == InterfaceKind::Default) {
-            name.class_signature(reader)
+            name.class_signature()
         } else {
             String::new()
         };
 
         loop {
-            let (base_namespace, base_name) = base.extends(reader).name(reader);
+            let (base_namespace, base_name) = base.extends().name();
 
             if (base_namespace, base_name) == ("System", "Object") {
                 break;
             }
 
-            base = reader.resolve_type_def((base_namespace, base_name));
-            let base = TypeName::from_type_def(reader, base, &name.namespace);
+            base = name
+                .def
+                .reader
+                .resolve_type_def((base_namespace, base_name));
+            let base = TypeName::from_type_def(&base, &name.namespace);
 
-            add_dependencies(&mut interfaces, reader, &base, &name.namespace, true);
+            add_dependencies(&mut interfaces, &base, &name.namespace, true);
             bases.push(base);
         }
 
         let mut default_constructor = false;
         let mut is_agile = false;
 
-        for attribute in name.def.attributes(reader) {
-            match attribute.name(reader) {
+        for attribute in name.def.attributes() {
+            match attribute.name() {
                 ("Windows.Foundation.Metadata", "StaticAttribute") => {
                     add_type(
                         &mut interfaces,
-                        reader,
-                        attribute_factory(reader, attribute).unwrap(),
+                        &attribute_factory(&attribute).unwrap(),
                         &name.namespace,
                         InterfaceKind::Statics,
                     );
                 }
                 ("Windows.Foundation.Metadata", "ActivatableAttribute") => {
-                    match attribute_factory(reader, attribute) {
+                    match attribute_factory(&attribute) {
                         Some(def) => {
                             add_type(
                                 &mut interfaces,
-                                reader,
-                                def,
+                                &def,
                                 &name.namespace,
                                 InterfaceKind::Statics,
                             );
@@ -71,12 +71,11 @@ impl Class {
                 ("Windows.Foundation.Metadata", "ComposableAttribute") => {
                     // One of the arguments is a CompositionType enum and the Public variant
                     // has a value of 2 as a signed 32-bit integer.
-                    for (_name, arg) in attribute.args(reader) {
+                    for (_name, arg) in attribute.args() {
                         if let winmd::AttributeArg::I32(2) = arg {
                             add_type(
                                 &mut interfaces,
-                                reader,
-                                attribute_factory(reader, attribute).unwrap(),
+                                &attribute_factory(&attribute).unwrap(),
                                 &name.namespace,
                                 InterfaceKind::Composable,
                             );
@@ -86,7 +85,7 @@ impl Class {
                 ("Windows.Foundation.Metadata", "MarshalingBehaviorAttribute") => {
                     // The only argument is a MarshalingType enum and the Agile variant
                     // has a value of 2 as a signed 32-bit integer.
-                    let (_name, arg) = &attribute.args(reader)[0];
+                    let (_name, arg) = &attribute.args()[0];
 
                     if let winmd::AttributeArg::I32(2) = arg {
                         is_agile = true;
@@ -95,6 +94,8 @@ impl Class {
                 _ => {}
             }
         }
+
+        rename_collisions(&mut interfaces);
 
         Self {
             name,
@@ -125,11 +126,10 @@ impl Class {
             .iter()
             .find(|i| i.kind == InterfaceKind::Default)
         {
-            let conversions = TokenStream::from_iter(
-                self.interfaces
-                    .iter()
-                    .map(|interface| interface.gen_conversions(&name, &TokenStream::new())),
-            );
+            let conversions = self
+                .interfaces
+                .iter()
+                .map(|interface| interface.gen_conversions(&name, &TokenStream::new()));
 
             let new = if self.default_constructor {
                 quote! {
@@ -148,7 +148,6 @@ impl Class {
             let default_name = default_interface.name.gen();
             let abi_name = default_interface.name.gen_abi();
             let (async_get, future) = gen_async(&self.name, &self.interfaces);
-            let debug = gen_debug(&self.name, &self.interfaces);
 
             let send_sync = if self.is_agile {
                 let constraints = self.name.gen_constraint();
@@ -162,34 +161,41 @@ impl Class {
 
             quote! {
                 #[repr(transparent)]
-                #[derive(::std::clone::Clone, ::std::default::Default, ::std::cmp::PartialEq)]
-                pub struct #name { ptr: ::winrt::ComPtr<#default_name> }
+                pub struct #name(::winrt::Object);
                 impl #name {
                     #new
                     #methods
                     #async_get
                     #call_factory
                 }
+                impl ::std::clone::Clone for #name {
+                    fn clone(&self) -> Self {
+                        Self(self.0.clone())
+                    }
+                }
+                impl ::std::cmp::PartialEq for #name {
+                    fn eq(&self, other: &Self) -> bool {
+                        self.0 == other.0
+                    }
+                }
+                impl ::std::cmp::Eq for #name {}
+                impl ::std::fmt::Debug for #name {
+                    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                        write!(f, "{:?}", self.0)
+                    }
+                }
                 #type_name
-                unsafe impl ::winrt::ComInterface for #name {
-                    type VTable = #abi_name;
-                    const IID: ::winrt::Guid = <#default_name as ::winrt::ComInterface>::IID;
+                unsafe impl ::winrt::Interface for #name {
+                    type Vtable = #abi_name;
+                    const IID: ::winrt::Guid = <#default_name as ::winrt::Interface>::IID;
                 }
                 unsafe impl ::winrt::RuntimeType for #name {
+                    type DefaultType = ::std::option::Option<Self>;
                     const SIGNATURE: ::winrt::ConstBuffer = ::winrt::ConstBuffer::from_slice(#signature);
-                }
-                unsafe impl ::winrt::AbiTransferable for #name {
-                    type Abi = ::winrt::RawComPtr<#default_name>;
-                    fn get_abi(&self) -> Self::Abi {
-                        <::winrt::ComPtr<#default_name> as ::winrt::AbiTransferable>::get_abi(&self.ptr)
-                    }
-                    fn set_abi(&mut self) -> *mut Self::Abi {
-                        <::winrt::ComPtr<#default_name> as ::winrt::AbiTransferable>::set_abi(&mut self.ptr)
-                    }
                 }
                 impl ::std::convert::From<#name> for ::winrt::Object {
                     fn from(value: #name) -> Self {
-                        unsafe { ::std::mem::transmute(value) }
+                        value.0
                     }
                 }
                 impl ::std::convert::From<&#name> for ::winrt::Object {
@@ -207,8 +213,7 @@ impl Class {
                         ::winrt::Param::Owned(::std::convert::Into::<::winrt::Object>::into(::std::clone::Clone::clone(self)))
                     }
                 }
-                #debug
-                #conversions
+                #(#conversions)*
                 #bases
                 #iterator
                 #send_sync
@@ -237,7 +242,7 @@ impl Class {
                 }
                 impl ::std::convert::From<&#from> for #into {
                     fn from(value: &#from) -> Self {
-                        <#from as ::winrt::ComInterface>::query(value)
+                        ::winrt::Interface::cast(value).unwrap()
                     }
                 }
                 impl<'a> ::std::convert::Into<::winrt::Param<'a, #into>> for #from {
@@ -255,11 +260,11 @@ impl Class {
     }
 
     fn gen_call_factory(&self) -> TokenStream {
-        let mut tokens = Vec::new();
+        let mut tokens = TokenStream::new();
 
         if self.default_constructor {
             let interface_tokens = quote! { ::winrt::IActivationFactory };
-            tokens.push(self.to_named_call_factory("IActivationFactory", &interface_tokens));
+            tokens.combine(&self.to_named_call_factory("IActivationFactory", &interface_tokens));
         }
 
         for interface in &self.interfaces {
@@ -275,10 +280,10 @@ impl Class {
 
             let interface_name = format_ident(&interface.name.name);
             let interface_tokens = quote! { #interface_namespace #interface_name };
-            tokens.push(self.to_named_call_factory(&interface.name.name, &interface_tokens));
+            tokens.combine(&self.to_named_call_factory(&interface.name.name, &interface_tokens));
         }
 
-        TokenStream::from_iter(tokens)
+        tokens
     }
 
     fn to_named_call_factory(&self, method_name: &str, interface: &TokenStream) -> TokenStream {
@@ -308,11 +313,8 @@ impl Class {
     }
 }
 
-fn attribute_factory(
-    reader: &winmd::TypeReader,
-    attribute: winmd::Attribute,
-) -> Option<winmd::TypeDef> {
-    for (_, arg) in attribute.args(reader) {
+fn attribute_factory(attribute: &winmd::Attribute) -> Option<winmd::TypeDef> {
+    for (_, arg) in attribute.args() {
         if let winmd::AttributeArg::TypeDef(def) = arg {
             return Some(def);
         }
@@ -326,12 +328,12 @@ mod tests {
     use crate::*;
 
     fn class((namespace, type_name): (&str, &str)) -> Class {
-        let reader = &winmd::TypeReader::from_os();
+        let reader = &winmd::TypeReader::from_build();
         let def = reader.resolve_type_def((namespace, type_name));
 
-        match Type::from_type_def(reader, def) {
-            Type::Class(t) => t,
-            _ => panic!("Type not an interface"),
+        match TypeDefinition::from_type_def(&def) {
+            TypeDefinition::Class(t) => t,
+            _ => panic!("TypeDefinition not an interface"),
         }
     }
 

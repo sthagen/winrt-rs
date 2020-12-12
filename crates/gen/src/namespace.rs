@@ -32,15 +32,15 @@ pub fn gen_namespace(destination: &str, source: &str) -> TokenStream {
     TokenStream::from_iter(tokens)
 }
 
-pub fn gen_binding_namespace(destination: &str) -> TokenStream {
-    let mut tokens = vec![quote! { ::winrt_bindings:: }];
-    let destination = destination.split('.').peekable();
+pub fn gen_full_namespace(destination: &str) -> TokenStream {
+    let mut tokens = TokenStream::new();
 
-    tokens.extend(destination.map(|destination| {
+    for destination in destination.split('.') {
         let destination =
             crate::format_ident(&crate::to_snake(destination, crate::MethodKind::Normal));
-        quote! { #destination:: }
-    }));
 
-    TokenStream::from_iter(tokens)
+        tokens.combine(&quote! { #destination:: });
+    }
+
+    tokens
 }
