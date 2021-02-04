@@ -8,24 +8,16 @@ pub struct Attribute {
 }
 
 impl Attribute {
-    pub fn parent(&self) -> HasAttribute {
-        self.reader.decode(self.row, 0)
-    }
-
     pub fn constructor(&self) -> AttributeType {
         self.reader.decode(self.row, 1)
     }
 
     pub fn name(&self) -> (&'static str, &'static str) {
-        match self.constructor() {
-            AttributeType::MethodDef(method) => method.parent().name(),
-
-            AttributeType::MemberRef(method) => match method.parent() {
-                MemberRefParent::TypeDef(parent) => parent.name(),
-                MemberRefParent::TypeRef(parent) => parent.name(),
-                _ => panic!("Expected a TypeDef or TypeRef"),
-            },
+        if let AttributeType::MemberRef(method) = self.constructor() {
+            return method.parent().name();
         }
+
+        panic!("Attribute.name");
     }
 
     pub fn args(&self) -> Vec<(String, AttributeArg)> {
@@ -72,12 +64,12 @@ impl Attribute {
                         let index = name.rfind('.').unwrap();
                         AttributeArg::TypeDef(
                             self.reader
-                                .resolve_type_def((&name[0..index], &name[index + 1..])),
+                                .expect_type_def((&name[0..index], &name[index + 1..])),
                         )
                     } else {
                         let def = match type_def_or_ref {
                             TypeDefOrRef::TypeRef(value) => {
-                                self.reader.resolve_type_def(value.name())
+                                self.reader.expect_type_def(value.name())
                             }
                             TypeDefOrRef::TypeDef(value) => value,
                             TypeDefOrRef::TypeSpec(_) => panic!("Unsupported underlying type"),
@@ -113,7 +105,7 @@ impl Attribute {
                     let index = name.rfind('.').unwrap();
                     AttributeArg::TypeDef(
                         self.reader
-                            .resolve_type_def((&name[0..index], &name[index + 1..])),
+                            .expect_type_def((&name[0..index], &name[index + 1..])),
                     )
                 }
                 _ => panic!("Unexpected named attribute argument type"),
@@ -122,12 +114,6 @@ impl Attribute {
         }
 
         args
-    }
-}
-
-impl std::fmt::Debug for Attribute {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Attribute").field("row", &self.row).finish()
     }
 }
 
@@ -142,5 +128,31 @@ fn read_enum(element_type: &ElementType, blob: &mut Blob) -> AttributeArg {
         ElementType::I64 => AttributeArg::I64(blob.read_i64()),
         ElementType::U64 => AttributeArg::U64(blob.read_u64()),
         _ => panic!("Invalid underlying enum type encountered!"),
+    }
+}
+
+impl std::fmt::Debug for Attribute {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Attribute").field("row", &self.row).finish()
+    }
+}
+
+impl PartialEq for Attribute {
+    fn eq(&self, other: &Self) -> bool {
+        self.row == other.row
+    }
+}
+
+impl Eq for Attribute {}
+
+impl Ord for Attribute {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.row.cmp(&other.row)
+    }
+}
+
+impl PartialOrd for Attribute {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
     }
 }

@@ -15,6 +15,15 @@ pub enum EnumConstant {
     I32(i32),
 }
 
+impl EnumConstant {
+    fn next(&self) -> Self {
+        match self {
+            Self::U32(value) => Self::U32(value + 1),
+            Self::I32(value) => Self::I32(value + 1),
+        }
+    }
+}
+
 impl Enum {
     pub fn from_type_name(name: TypeName) -> Self {
         let signature = if name.def.is_winrt() {
@@ -27,16 +36,22 @@ impl Enum {
         let mut underlying_type = None;
 
         for field in name.def.fields() {
-            if let Some(constant) = field.constants().next() {
-                let mut value = constant.value();
+            if field.flags().literal() {
+                if let Some(constant) = field.constant() {
+                    let mut value = constant.value();
 
-                let value = match constant.value_type() {
-                    winmd::ElementType::I32 => EnumConstant::I32(value.read_i32()),
-                    winmd::ElementType::U32 => EnumConstant::U32(value.read_u32()),
-                    _ => panic!("Enum::from_type_def"),
-                };
+                    let value = match constant.value_type() {
+                        winmd::ElementType::I32 => EnumConstant::I32(value.read_i32()),
+                        winmd::ElementType::U32 => EnumConstant::U32(value.read_u32()),
+                        _ => panic!("Enum::from_type_def"),
+                    };
 
-                fields.push((field.name(), value));
+                    fields.push((field.name(), value));
+                } else if fields.is_empty() {
+                    fields.push((field.name(), EnumConstant::I32(0)));
+                } else {
+                    fields.push((field.name(), fields.last().unwrap().1.next()));
+                }
             } else {
                 let blob = &mut field.sig();
                 blob.read_unsigned();
@@ -48,7 +63,6 @@ impl Enum {
                 underlying_type = Some(winmd::ElementType::from_blob(blob));
             }
         }
-
         Self {
             name,
             fields,
@@ -102,17 +116,18 @@ impl Enum {
             let signature = Literal::byte_string(&self.signature.as_bytes());
 
             quote! {
-                unsafe impl ::winrt::RuntimeType for #name {
+                unsafe impl ::windows::RuntimeType for #name {
                     type DefaultType = Self;
-                    const SIGNATURE: ::winrt::ConstBuffer = ::winrt::ConstBuffer::from_slice(#signature);
+                    const SIGNATURE: ::windows::ConstBuffer = ::windows::ConstBuffer::from_slice(#signature);
                 }
             }
         };
 
         quote! {
             #[allow(non_camel_case_types)]
+            #[derive(PartialEq, Eq)]
             #[repr(transparent)]
-            pub struct #name(#underlying_type);
+            pub struct #name(pub #underlying_type);
             impl ::std::convert::From<#underlying_type> for #name {
                 fn from(value: #underlying_type) -> Self {
                     Self(value)
@@ -133,18 +148,12 @@ impl Enum {
                     write!(f, "{:?}", self.0)
                 }
             }
-            impl ::std::cmp::PartialEq for #name {
-                fn eq(&self, other: &Self) -> bool {
-                    self.0 == other.0
-                }
-            }
-            impl ::std::cmp::Eq for #name {}
             impl ::std::marker::Copy for #name {}
             impl #name {
                 #![allow(non_upper_case_globals)]
                 #(#fields)*
             }
-            unsafe impl ::winrt::Abi for #name {
+            unsafe impl ::windows::Abi for #name {
                 type Abi = Self;
             }
             #runtime_type

@@ -1,9 +1,10 @@
-use winrt::*;
+use windows::*;
+extern crate windows_winmd as winmd;
 
 #[test]
 fn named_arguments() -> Result<()> {
-    let reader = winmd::TypeReader::from_build();
-    let type_def = reader.resolve_type_def(("TestComponent", "TestRunner"));
+    let reader = winmd::TypeReader::get();
+    let type_def = reader.expect_type_def(("TestComponent", "TestRunner"));
 
     // TestRunner should have a custom attribute on it
     let mut some_string = 0;

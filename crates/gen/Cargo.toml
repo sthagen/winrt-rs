@@ -1,17 +1,15 @@
 [package]
-name = "winrt-gen"
-version = "0.8.0"
+name = "windows_gen"
+version = "0.3.1"
 authors = ["Microsoft"]
 edition = "2018"
-license = "MIT"
-description = "Code generation for the winrt crate"
+license = "MIT OR Apache-2.0"
+description = "Code generation for the windows crate"
 
 [dependencies]
-winrt-gen-macros = { path = "macros",  version = "0.8.0" }
-winmd = { path = "../winmd",  version = "0.8.0" }
+windows_gen_macros = { path = "macros",  version = "0.3.1" }
+windows_winmd = { path = "../winmd",  version = "0.3.1" }
 quote = "1.0"
 syn = "1.0"
 proc-macro2 = "1.0"
 squote = "0.1.2"
-sha1 = "0.6.0"
-rayon = "1.3"

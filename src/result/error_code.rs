@@ -2,7 +2,8 @@ use crate::*;
 
 /// A primitive error code value returned by most COM functions. An `ErrorCode` is sometimes called an `HRESULT`.
 #[repr(transparent)]
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Default, Debug, PartialEq)]
+#[must_use]
 pub struct ErrorCode(pub u32);
 
 impl ErrorCode {
@@ -73,7 +74,7 @@ impl ErrorCode {
 
     /// Retrieves the error code stored on the calling thread.
     #[inline]
-    pub(crate) fn from_thread() -> Self {
+    pub fn from_thread() -> Self {
         Self::from_win32(unsafe { GetLastError() })
     }
 

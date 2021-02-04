@@ -50,7 +50,7 @@ impl Delegate {
 
         quote! {
             #[repr(transparent)]
-            pub struct #definition(::winrt::IUnknown, #phantoms) where #constraints;
+            pub struct #definition(::windows::IUnknown, #phantoms) where #constraints;
             impl<#constraints> ::std::clone::Clone for #name {
                 fn clone(&self) -> Self {
                     Self(self.0.clone(), #phantoms)
@@ -67,19 +67,20 @@ impl Delegate {
                     write!(f, "{:?}", self.0)
                 }
             }
-            unsafe impl<#constraints> ::winrt::Interface for #name {
+            unsafe impl<#constraints> ::windows::Interface for #name {
                 type Vtable = #vtable_definition;
-                const IID: ::winrt::Guid = #guid;
+                const IID: ::windows::Guid = #guid;
             }
-            unsafe impl<#constraints> ::winrt::RuntimeType for #name {
+            unsafe impl<#constraints> ::windows::RuntimeType for #name {
                 type DefaultType = ::std::option::Option<Self>;
-                const SIGNATURE: ::winrt::ConstBuffer = { #signature };
+                const SIGNATURE: ::windows::ConstBuffer = { #signature };
             }
             #[repr(C)]
+            #[doc(hidden)]
             pub struct #vtable_definition(
-                pub unsafe extern "system" fn(this: ::winrt::RawPtr, iid: &::winrt::Guid, interface: *mut ::winrt::RawPtr) -> ::winrt::ErrorCode,
-                pub unsafe extern "system" fn(this: ::winrt::RawPtr) -> u32,
-                pub unsafe extern "system" fn(this: ::winrt::RawPtr) -> u32,
+                pub unsafe extern "system" fn(this: ::windows::RawPtr, iid: &::windows::Guid, interface: *mut ::windows::RawPtr) -> ::windows::ErrorCode,
+                pub unsafe extern "system" fn(this: ::windows::RawPtr) -> u32,
+                pub unsafe extern "system" fn(this: ::windows::RawPtr) -> u32,
                 pub unsafe extern "system" fn #abi_signature,
                 #phantoms
             ) where #constraints;
@@ -88,7 +89,7 @@ impl Delegate {
                 pub fn new<#fn_constraint>(invoke: F) -> Self {
                     let com = #box_name {
                         vtable: &#box_name::VTABLE,
-                        count: ::winrt::RefCount::new(),
+                        count: ::windows::RefCount::new(),
                         invoke,
                     };
                     unsafe {
@@ -100,7 +101,7 @@ impl Delegate {
             struct #box_definition where #constraints {
                 vtable: *const #vtable_definition,
                 invoke: F,
-                count: ::winrt::RefCount,
+                count: ::windows::RefCount,
             }
             #[allow(non_snake_case)]
             impl<#constraints #fn_constraint> #box_name {
@@ -111,30 +112,30 @@ impl Delegate {
                     Self::Invoke,
                     #phantoms
                 );
-                unsafe extern "system" fn QueryInterface(this: ::winrt::RawPtr, iid: &::winrt::Guid, interface: *mut ::winrt::RawPtr) -> ::winrt::ErrorCode {
-                    let this = this as *mut ::winrt::RawPtr as *mut Self;
+                unsafe extern "system" fn QueryInterface(this: ::windows::RawPtr, iid: &::windows::Guid, interface: *mut ::windows::RawPtr) -> ::windows::ErrorCode {
+                    let this = this as *mut ::windows::RawPtr as *mut Self;
 
-                    *interface = if iid == &<#name as ::winrt::Interface>::IID ||
-                        iid == &<::winrt::IUnknown as ::winrt::Interface>::IID ||
-                        iid == &<::winrt::IAgileObject as ::winrt::Interface>::IID {
+                    *interface = if iid == &<#name as ::windows::Interface>::IID ||
+                        iid == &<::windows::IUnknown as ::windows::Interface>::IID ||
+                        iid == &<::windows::IAgileObject as ::windows::Interface>::IID {
                             &mut (*this).vtable as *mut _ as _
                         } else {
                             ::std::ptr::null_mut()
                         };
 
                     if (*interface).is_null() {
-                        ::winrt::ErrorCode::E_NOINTERFACE
+                        ::windows::ErrorCode::E_NOINTERFACE
                     } else {
                         (*this).count.add_ref();
-                        ::winrt::ErrorCode::S_OK
+                        ::windows::ErrorCode::S_OK
                     }
                 }
-                unsafe extern "system" fn AddRef(this: ::winrt::RawPtr) -> u32 {
-                    let this = this as *mut ::winrt::RawPtr as *mut Self;
+                unsafe extern "system" fn AddRef(this: ::windows::RawPtr) -> u32 {
+                    let this = this as *mut ::windows::RawPtr as *mut Self;
                     (*this).count.add_ref()
                 }
-                unsafe extern "system" fn Release(this: ::winrt::RawPtr) -> u32 {
-                    let this = this as *mut ::winrt::RawPtr as *mut Self;
+                unsafe extern "system" fn Release(this: ::windows::RawPtr) -> u32 {
+                    let this = this as *mut ::windows::RawPtr as *mut Self;
                     let remaining = (*this).count.release();
 
                     if remaining == 0 {
@@ -144,7 +145,7 @@ impl Delegate {
                     remaining
                 }
                 unsafe extern "system" fn Invoke #abi_signature {
-                    let this = this as *mut ::winrt::RawPtr as *mut Self;
+                    let this = this as *mut ::windows::RawPtr as *mut Self;
                     #invoke_upcall
                 }
             }
@@ -152,15 +153,21 @@ impl Delegate {
     }
 
     fn gen_fn_constraint(&self) -> TokenStream {
-        let params = self.method.params.iter().map(|param| param.gen_fn());
+        let params = self
+            .method
+            .signature
+            .params
+            .iter()
+            .map(|param| param_gen_fn(param));
 
-        let return_type = if let Some(return_type) = &self.method.return_type {
-            return_type.gen_return()
+        // TODO: move duplicate code to Type
+        let return_type = if let Some(return_type) = &self.method.signature.return_type {
+            param_gen_return(return_type)
         } else {
             quote! { () }
         };
 
-        quote! { F: FnMut(#(#params)*) -> ::winrt::Result<#return_type> + 'static }
+        quote! { F: FnMut(#(#params)*) -> ::windows::Result<#return_type> + 'static }
     }
 
     fn gen_box_definition(&self, fn_constraint: &TokenStream) -> TokenStream {
@@ -188,4 +195,36 @@ impl Delegate {
 
 fn format_impl_ident(name: &str) -> squote::Ident {
     squote::format_ident!("{}_box", name)
+}
+
+fn param_gen_fn(t: &Type) -> TokenStream {
+    let tokens = t.kind.gen();
+
+    if t.is_array {
+        if t.is_input {
+            quote! { &[#tokens], }
+        } else if t.by_ref {
+            quote! { &mut ::windows::Array<#tokens>, }
+        } else {
+            quote! { &mut [#tokens], }
+        }
+    } else if t.is_input {
+        match t.kind {
+            TypeKind::String | TypeKind::Guid | TypeKind::Struct(_) => {
+                quote! { &#tokens, }
+            }
+            TypeKind::Generic(_) => {
+                quote! { &<#tokens as ::windows::RuntimeType>::DefaultType, }
+            }
+            TypeKind::Object
+            | TypeKind::Class(_)
+            | TypeKind::Interface(_)
+            | TypeKind::Delegate(_) => {
+                quote! { &::std::option::Option<#tokens>, }
+            }
+            _ => quote! { #tokens, },
+        }
+    } else {
+        quote! { &mut #tokens, }
+    }
 }

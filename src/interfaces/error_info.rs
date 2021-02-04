@@ -1,4 +1,5 @@
 use crate::*;
+use std::convert::TryInto;
 
 /// Provides detailed error information. `IErrorInfo` represents the
 /// [IErrorInfo](https://docs.microsoft.com/en-us/windows/win32/api/oaidl/nn-oaidl-ierrorinfo)
@@ -25,11 +26,7 @@ impl IErrorInfo {
     pub fn from_thread() -> Result<Self> {
         let mut result = None;
 
-        unsafe {
-            GetErrorInfo(0, &mut result);
-        }
-
-        result.ok_or_else(|| Error::fast_error(ErrorCode::E_POINTER))
+        unsafe { GetErrorInfo(0, &mut result).and_some(result) }
     }
 
     /// Gets a description of the error.
@@ -37,10 +34,10 @@ impl IErrorInfo {
         let mut value = BString::new();
 
         unsafe {
-            (self.vtable().5)(self.abi(), value.set_abi());
+            let _ = (self.vtable().5)(self.abi(), value.set_abi());
         }
 
-        value.into()
+        value.try_into().unwrap_or_default()
     }
 }
 

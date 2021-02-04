@@ -1,8 +1,7 @@
 use crate::*;
-use rayon::iter::ParallelIterator;
 use std::convert::{TryFrom, TryInto};
 use syn::spanned::Spanned;
-use winrt_gen::{NamespaceTypes, TypeLimit, TypeLimits, TypeTree};
+use windows_gen::{NamespaceTypes, TypeLimit, TypeLimits, TypeTree};
 
 pub struct BuildLimits(pub std::collections::BTreeSet<TypesDeclaration>);
 
@@ -10,7 +9,7 @@ impl BuildLimits {
     pub fn to_tokens_string(self) -> Result<String, proc_macro2::TokenStream> {
         let is_foundation = self.0.is_empty();
 
-        let reader = winmd::TypeReader::from_build();
+        let reader = winmd::TypeReader::get();
 
         let mut limits = TypeLimits::new(reader);
 
@@ -25,7 +24,7 @@ impl BuildLimits {
             for namespace in foundation_namespaces {
                 limits
                     .insert(NamespaceTypes {
-                        namespace: namespace.to_string(),
+                        namespace: &namespace,
                         limit: TypeLimit::All,
                     })
                     .unwrap();
@@ -51,7 +50,7 @@ impl BuildLimits {
             tree.reexport();
         }
 
-        let ts = tree.gen().reduce(squote::TokenStream::new, |mut accum, n| {
+        let ts = tree.gen().fold(squote::TokenStream::new(), |mut accum, n| {
             accum.combine(&n);
             accum
         });
@@ -107,27 +106,22 @@ impl syn::parse::Parse for BuildLimits {
             let limit: TypesDeclaration = use_tree.try_into()?;
 
             limits.insert(limit);
+
+            if !input.is_empty() {
+                input.parse::<syn::Token![,]>()?;
+            }
         }
         Ok(Self(limits))
     }
 }
 
 fn use_tree_to_namespace_types(use_tree: &syn::UseTree) -> syn::parse::Result<NamespaceTypes> {
-    fn recurse(tree: &syn::UseTree, current: &mut String) -> syn::parse::Result<NamespaceTypes> {
-        fn check_for_module_instead_of_type(
-            name: &str,
-            span: proc_macro2::Span,
-        ) -> syn::parse::Result<()> {
-            let error = Err(syn::Error::new(
-                span,
-                "Expected `*` or type name, but found what appears to be a module",
-            ));
-            if name.to_lowercase() == name {
-                return error;
-            }
-            Ok(())
-        }
-
+    let reader = winmd::TypeReader::get();
+    fn recurse(
+        reader: &'static winmd::TypeReader,
+        tree: &syn::UseTree,
+        current: &mut String,
+    ) -> syn::parse::Result<NamespaceTypes> {
         match tree {
             syn::UseTree::Path(p) => {
                 if !current.is_empty() {
@@ -136,25 +130,23 @@ fn use_tree_to_namespace_types(use_tree: &syn::UseTree) -> syn::parse::Result<Na
 
                 current.push_str(&p.ident.to_string());
 
-                recurse(&*p.tree, current)
+                recurse(reader, &*p.tree, current)
             }
-            syn::UseTree::Glob(_) => {
-                let namespace = namespace_literal_to_rough_namespace(&current.clone());
+            syn::UseTree::Glob(g) => {
+                let namespace = find_namespace(reader, &current.clone(), g.span())?;
                 Ok(NamespaceTypes {
                     namespace,
                     limit: TypeLimit::All,
                 })
             }
             syn::UseTree::Group(g) => {
-                let namespace = namespace_literal_to_rough_namespace(&current.clone());
+                let namespace = find_namespace(reader, &current.clone(), g.span())?;
 
                 let mut types = Vec::with_capacity(g.items.len());
                 for tree in &g.items {
                     match tree {
                         syn::UseTree::Name(n) => {
-                            let name = n.ident.to_string();
-                            check_for_module_instead_of_type(&name, n.span())?;
-                            types.push(name);
+                            types.push(n.ident.to_string());
                         }
                         syn::UseTree::Rename(_) => {
                             return Err(syn::Error::new(
@@ -171,9 +163,8 @@ fn use_tree_to_namespace_types(use_tree: &syn::UseTree) -> syn::parse::Result<Na
                 })
             }
             syn::UseTree::Name(n) => {
-                let namespace = namespace_literal_to_rough_namespace(&current.clone());
+                let namespace = find_namespace(reader, &current.clone(), n.span())?;
                 let name = n.ident.to_string();
-                check_for_module_instead_of_type(&name, n.span())?;
                 Ok(NamespaceTypes {
                     namespace,
                     limit: TypeLimit::Some(vec![name]),
@@ -186,5 +177,18 @@ fn use_tree_to_namespace_types(use_tree: &syn::UseTree) -> syn::parse::Result<Na
         }
     }
 
-    recurse(use_tree, &mut String::new())
+    recurse(reader, use_tree, &mut String::new())
+}
+
+fn find_namespace(
+    reader: &'static winmd::TypeReader,
+    namespace: &str,
+    span: proc_macro2::Span,
+) -> syn::parse::Result<&'static str> {
+    let namespace = namespace_literal_to_rough_namespace(namespace);
+    if let Some(namespace) = reader.find_lowercase_namespace(&namespace) {
+        Ok(namespace)
+    } else {
+        Err(syn::Error::new(span, "Module not found"))
+    }
 }

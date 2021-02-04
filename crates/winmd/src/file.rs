@@ -17,10 +17,8 @@ pub struct File {
     pub(crate) strings: u32,
     /// The index of the blobs data
     pub(crate) blobs: u32,
-    /// The index of the guids data
-    pub(crate) guids: u32,
     /// The table data
-    pub(crate) tables: [TableData; 11],
+    pub(crate) tables: [TableData; 13],
 }
 
 /// A well-known index of data into the winmd tables array
@@ -38,6 +36,8 @@ pub enum TableIndex {
     TypeDef,
     TypeRef,
     TypeSpec,
+    ImplMap,
+    ModuleRef,
 }
 
 impl TableData {
@@ -79,25 +79,16 @@ impl TableData {
 }
 
 impl File {
-    /// Parse a Windows metadata file at the given path
-    ///
-    /// # Panics
-    ///
-    /// Panics if the file at the path cannot be read or if there is a fatal error when parsing the file
-    pub(crate) fn new<P: AsRef<std::path::Path>>(filename: P) -> Self {
-        let bytes = std::fs::read(filename.as_ref())
-            .unwrap_or_else(|e| panic!("Could not read file {:?}: {:?}", filename.as_ref(), e));
+    pub(crate) fn from_bytes(bytes: Vec<u8>) -> Self {
         let mut file = Self {
             bytes,
             ..Default::default()
         };
+
         let dos = file.bytes.view_as::<ImageDosHeader>(0);
 
         if dos.signature != IMAGE_DOS_SIGNATURE {
-            panic!(
-                "Invalid file: file does not appear to be a winmd file - '{:?}'",
-                filename.as_ref()
-            );
+            panic!("Invalid file: file does not appear to be a winmd file");
         }
 
         let pe = file.bytes.view_as::<ImageNtHeader>(dos.lfanew as u32);
@@ -154,8 +145,8 @@ impl File {
             match stream_name {
                 b"#Strings" => file.strings = cli_offset + stream_offset,
                 b"#Blob" => file.blobs = cli_offset + stream_offset,
-                b"#GUID" => file.guids = cli_offset + stream_offset,
                 b"#~" => tables_data = (cli_offset + stream_offset, stream_size),
+                b"#GUID" => {}
                 b"#US" => {}
                 _ => panic!("Invalid file: invalid stream name"),
             }
@@ -191,13 +182,11 @@ impl File {
         let mut unused_field_rva = TableData::default();
         let mut unused_file = TableData::default();
         let mut unused_generic_param_constraint = TableData::default();
-        let mut unused_impl_map = TableData::default();
         let mut unused_manifest_resource = TableData::default();
         let mut unused_method_impl = TableData::default();
         let mut unused_method_semantics = TableData::default();
         let mut unused_method_spec = TableData::default();
         let mut unused_module = TableData::default();
-        let mut unused_module_ref = TableData::default();
         let mut unused_nested_class = TableData::default();
         let mut unused_property = TableData::default();
         let mut unused_property_map = TableData::default();
@@ -233,9 +222,9 @@ impl File {
                 0x17 => unused_property.row_count = row_count,
                 0x18 => unused_method_semantics.row_count = row_count,
                 0x19 => unused_method_impl.row_count = row_count,
-                0x1a => unused_module_ref.row_count = row_count,
+                0x1a => file.tables[TableIndex::ModuleRef as usize].row_count = row_count,
                 0x1b => file.tables[TableIndex::TypeSpec as usize].row_count = row_count,
-                0x1c => unused_impl_map.row_count = row_count,
+                0x1c => file.tables[TableIndex::ImplMap as usize].row_count = row_count,
                 0x1d => unused_field_rva.row_count = row_count,
                 0x20 => unused_assembly.row_count = row_count,
                 0x21 => unused_assembly_processor.row_count = row_count,
@@ -278,7 +267,7 @@ impl File {
             &unused_property,
             &unused_event,
             &unused_standalone_sig,
-            &unused_module_ref,
+            &file.tables[TableIndex::ModuleRef as usize],
             &file.tables[TableIndex::TypeSpec as usize],
             &unused_assembly,
             &unused_assembly_ref,
@@ -304,7 +293,7 @@ impl File {
         let member_ref_parent = composite_index_size(&[
             &file.tables[TableIndex::TypeDef as usize],
             &file.tables[TableIndex::TypeRef as usize],
-            &unused_module_ref,
+            &file.tables[TableIndex::ModuleRef as usize],
             &file.tables[TableIndex::MethodDef as usize],
             &file.tables[TableIndex::TypeSpec as usize],
         ]);
@@ -334,7 +323,7 @@ impl File {
 
         let resolution_scope = composite_index_size(&[
             &unused_module,
-            &unused_module_ref,
+            &file.tables[TableIndex::ModuleRef as usize],
             &unused_assembly_ref,
             &file.tables[TableIndex::TypeRef as usize],
         ]);
@@ -448,11 +437,11 @@ impl File {
             0,
             0,
         );
-        unused_impl_map.set_columns(
+        file.tables[TableIndex::ImplMap as usize].set_columns(
             2,
             member_forwarded,
             string_index_size,
-            unused_module_ref.index_size(),
+            file.tables[TableIndex::ModuleRef as usize].index_size(),
             0,
             0,
         );
@@ -506,7 +495,7 @@ impl File {
             guid_index_size,
             0,
         );
-        unused_module_ref.set_columns(string_index_size, 0, 0, 0, 0, 0);
+        file.tables[TableIndex::ModuleRef as usize].set_columns(string_index_size, 0, 0, 0, 0, 0);
         unused_nested_class.set_columns(
             file.tables[TableIndex::TypeDef as usize].index_size(),
             file.tables[TableIndex::TypeDef as usize].index_size(),
@@ -565,9 +554,9 @@ impl File {
         unused_property.set_data(&mut view);
         unused_method_semantics.set_data(&mut view);
         unused_method_impl.set_data(&mut view);
-        unused_module_ref.set_data(&mut view);
+        file.tables[TableIndex::ModuleRef as usize].set_data(&mut view);
         file.tables[TableIndex::TypeSpec as usize].set_data(&mut view);
-        unused_impl_map.set_data(&mut view);
+        file.tables[TableIndex::ImplMap as usize].set_data(&mut view);
         unused_field_rva.set_data(&mut view);
         unused_assembly.set_data(&mut view);
         unused_assembly_processor.set_data(&mut view);
@@ -582,6 +571,13 @@ impl File {
         file.tables[TableIndex::GenericParam as usize].set_data(&mut view);
 
         file
+    }
+
+    pub(crate) fn new<P: AsRef<std::path::Path>>(filename: P) -> Self {
+        let bytes = std::fs::read(filename.as_ref())
+            .unwrap_or_else(|e| panic!("Could not read file {:?}: {:?}", filename.as_ref(), e));
+
+        Self::from_bytes(bytes)
     }
 
     pub(crate) fn type_def_table(&self) -> &TableData {

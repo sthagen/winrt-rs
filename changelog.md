@@ -1,38 +1,12 @@
-# Changelog
+# 0.3.1
 
-# [0.7.2] - 2020-07-27
-
-* Support for async await [#251](https://github.com/microsoft/winrt-rs/pull/251)
-* Add TimeSpan <> std::time::Duration interop [#253](https://github.com/microsoft/winrt-rs/pull/253)
-* Support for creating composable types [#255](https://github.com/microsoft/winrt-rs/pull/255)
-* Implement factory caching [#263](https://github.com/microsoft/winrt-rs/pull/263)
-* Various improvements to cargo-winrt
-* And more!
-
-
-# [0.7.1] - 2020-07-06
-
-## Added
-
-* Better error handling in `cargo winrt` [#206](https://github.com/microsoft/winrt-rs/pull/206)
-* Only re-generate code if the relevant winmd files have changed [#205](https://github.com/microsoft/winrt-rs/pull/205)
-* Handle local dependencies in `cargo winrt` [#217](https://github.com/microsoft/winrt-rs/pull/217)
-* Don't use `r#` raw identifiers unless necessary [#216](https://github.com/microsoft/winrt-rs/pull/216)
-* Improve macro error handling [#219](https://github.com/microsoft/winrt-rs/pull/219)
-* Improved color support for `cargo winrt` [#224](https://github.com/microsoft/winrt-rs/pull/224)
-* Internal improvement for caching of tokens during generation [#226](https://github.com/microsoft/winrt-rs/pull/226)
-* Add support for array arguments [#230](https://github.com/microsoft/winrt-rs/pull/230)
-* Dynamically load Win10 APIs [#228](https://github.com/microsoft/winrt-rs/pull/228)
-* Add support for both local and url based NuGet dependencies [#232](https://github.com/microsoft/winrt-rs/pull/228)
-* Support for agile types moving across threads [#231](https://github.com/microsoft/winrt-rs/pull/231)
-* And more!
-
-## Changed
-
-## Fixed
-
-* Properly move dlls over from NuGet packages when dlls are in `win10-$ARCH` folders [#234](https://github.com/microsoft/winrt-rs/pull/234)
-
-# [0.7.0] - 2020-06-04
-
-Initial release! 🎉🎉🎉
+- Many improvements to COM support including interface hierarchies. ([#448](https://github.com/microsoft/windows-rs/pull/448))
+- New COM helpers simplify common operations. ([#496](https://github.com/microsoft/windows-rs/pull/496))
+- New `CoString` type representing null-terminated UTF16 strings backed by the COM task allocator required by some Windows APIs. ([#514](https://github.com/microsoft/windows-rs/pull/514))
+- The `windows` crate is now dual-licensed under MIT or Apache. ([#476](https://github.com/microsoft/windows-rs/pull/476))
+- COM interface methods are now marked `unsafe`. ([#508](https://github.com/microsoft/windows-rs/pull/508))
+- Many new examples have been added to the [examples](https://github.com/microsoft/windows-rs/tree/master/examples) folder. ([#501](https://github.com/microsoft/windows-rs/pull/501))
+- Improvements to error handling and propagation support.
+- Improvements to numerics support.
+- Improvements to build time.
+- Other minor changes and fixes.

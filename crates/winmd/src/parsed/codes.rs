@@ -1,7 +1,7 @@
 use super::*;
 use crate::{traits::Decode, TableIndex, TypeReader};
 
-use winmd_macros::type_code;
+use windows_winmd_macros::type_code;
 
 #[type_code(2)]
 pub enum TypeDefOrRef {
@@ -49,12 +49,18 @@ pub enum AttributeType {
     MemberRef,
 }
 
+#[type_code(1)]
+pub enum MemberForwarded {
+    Field,
+    MethodDef,
+}
+
 impl TypeDefOrRef {
     pub fn name(&self) -> (&'static str, &'static str) {
         match self {
-            TypeDefOrRef::TypeDef(value) => value.name(),
-            TypeDefOrRef::TypeRef(value) => value.name(),
-            TypeDefOrRef::TypeSpec(_) => panic!("TypeDefOrRef.name"),
+            Self::TypeDef(value) => value.name(),
+            Self::TypeRef(value) => value.name(),
+            _ => panic!("TypeDefOrRef.name"),
         }
     }
 
@@ -62,7 +68,17 @@ impl TypeDefOrRef {
         match self {
             Self::TypeDef(value) => *value,
             Self::TypeRef(value) => value.resolve(),
-            Self::TypeSpec(_) => panic!("TypeDefOrRef.resolve"),
+            _ => panic!("TypeDefOrRef.resolve"),
+        }
+    }
+}
+
+impl MemberRefParent {
+    pub fn name(&self) -> (&'static str, &'static str) {
+        match self {
+            Self::TypeDef(value) => value.name(),
+            Self::TypeRef(value) => value.name(),
+            _ => panic!("MemberRefParent.name"),
         }
     }
 }

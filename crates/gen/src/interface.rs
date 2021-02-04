@@ -86,7 +86,7 @@ impl Interface {
 
         quote! {
             #[repr(transparent)]
-            pub struct #definition(::winrt::Object, #phantoms) where #constraints;
+            pub struct #definition(::windows::Object, #phantoms) where #constraints;
             impl<#constraints> ::std::clone::Clone for #name {
                 fn clone(&self) -> Self {
                     Self(self.0.clone(), #phantoms)
@@ -107,44 +107,45 @@ impl Interface {
                 #methods
                 #async_get
             }
-            unsafe impl<#constraints> ::winrt::Interface for #name {
+            unsafe impl<#constraints> ::windows::Interface for #name {
                 type Vtable = #abi_definition;
-                const IID: ::winrt::Guid = #guid;
+                const IID: ::windows::Guid = #guid;
             }
             #[repr(C)]
+            #[doc(hidden)]
             pub struct #abi_definition(
-                pub unsafe extern "system" fn(this: ::winrt::RawPtr, iid: &::winrt::Guid, interface: *mut ::winrt::RawPtr) -> ::winrt::ErrorCode,
-                pub unsafe extern "system" fn(this: ::winrt::RawPtr) -> u32,
-                pub unsafe extern "system" fn(this: ::winrt::RawPtr) -> u32,
-                pub unsafe extern "system" fn(this: ::winrt::RawPtr, count: *mut u32, values: *mut *mut ::winrt::Guid) -> ::winrt::ErrorCode,
-                pub unsafe extern "system" fn(this: ::winrt::RawPtr, value: *mut ::winrt::RawPtr) -> ::winrt::ErrorCode,
-                pub unsafe extern "system" fn(this: ::winrt::RawPtr, value: *mut i32) -> ::winrt::ErrorCode,
+                pub unsafe extern "system" fn(this: ::windows::RawPtr, iid: &::windows::Guid, interface: *mut ::windows::RawPtr) -> ::windows::ErrorCode,
+                pub unsafe extern "system" fn(this: ::windows::RawPtr) -> u32,
+                pub unsafe extern "system" fn(this: ::windows::RawPtr) -> u32,
+                pub unsafe extern "system" fn(this: ::windows::RawPtr, count: *mut u32, values: *mut *mut ::windows::Guid) -> ::windows::ErrorCode,
+                pub unsafe extern "system" fn(this: ::windows::RawPtr, value: *mut ::windows::RawPtr) -> ::windows::ErrorCode,
+                pub unsafe extern "system" fn(this: ::windows::RawPtr, value: *mut i32) -> ::windows::ErrorCode,
                 #(#abi_methods,)*
                 #phantoms
             ) where #constraints;
-            unsafe impl<#constraints> ::winrt::RuntimeType for #name {
+            unsafe impl<#constraints> ::windows::RuntimeType for #name {
                 type DefaultType = ::std::option::Option<Self>;
-                const SIGNATURE: ::winrt::ConstBuffer = { #signature };
+                const SIGNATURE: ::windows::ConstBuffer = { #signature };
             }
-            impl<#constraints> ::std::convert::From<#name> for ::winrt::Object {
+            impl<#constraints> ::std::convert::From<#name> for ::windows::Object {
                 fn from(value: #name) -> Self {
                     value.0
                 }
             }
-            impl<#constraints> ::std::convert::From<&#name> for ::winrt::Object {
+            impl<#constraints> ::std::convert::From<&#name> for ::windows::Object {
                 fn from(value: &#name) -> Self {
                     ::std::convert::From::from(::std::clone::Clone::clone(value))
                 }
             }
 
-            impl<'a, #constraints> ::std::convert::Into<::winrt::Param<'a, ::winrt::Object>> for #name {
-                fn into(self) -> ::winrt::Param<'a, ::winrt::Object> {
-                    ::winrt::Param::Owned(::std::convert::Into::<::winrt::Object>::into(self))
+            impl<'a, #constraints> ::std::convert::Into<::windows::Param<'a, ::windows::Object>> for #name {
+                fn into(self) -> ::windows::Param<'a, ::windows::Object> {
+                    ::windows::Param::Owned(::std::convert::Into::<::windows::Object>::into(self))
                 }
             }
-            impl<'a, #constraints> ::std::convert::Into<::winrt::Param<'a, ::winrt::Object>> for &'a #name {
-                fn into(self) -> ::winrt::Param<'a, ::winrt::Object> {
-                    ::winrt::Param::Owned(::std::convert::Into::<::winrt::Object>::into(::std::clone::Clone::clone(self)))
+            impl<'a, #constraints> ::std::convert::Into<::windows::Param<'a, ::windows::Object>> for &'a #name {
+                fn into(self) -> ::windows::Param<'a, ::windows::Object> {
+                    ::windows::Param::Owned(::std::convert::Into::<::windows::Object>::into(::std::clone::Clone::clone(self)))
                 }
             }
             #(#conversions)*
@@ -159,8 +160,8 @@ mod tests {
     use crate::*;
 
     fn interface((namespace, type_name): (&str, &str)) -> Interface {
-        let reader = &winmd::TypeReader::from_build();
-        let t = reader.resolve_type_def((namespace, type_name));
+        let reader = &winmd::TypeReader::get();
+        let t = reader.expect_type_def((namespace, type_name));
         let t = TypeDefinition::from_type_def(&t);
 
         match t {
@@ -189,8 +190,8 @@ mod tests {
         let method = &t.methods[0];
         assert!(method.name == "to_string");
 
-        assert!(method.params.is_empty());
-        let param = method.return_type.as_ref().unwrap();
+        assert!(method.signature.params.is_empty());
+        let param = method.signature.return_type.as_ref().unwrap();
         assert!(param.kind == TypeKind::String);
     }
 

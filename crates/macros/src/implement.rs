@@ -1,13 +1,14 @@
 use crate::*;
 use squote::{format_ident, quote, Literal, TokenStream};
+use windows_gen::format_ident;
 
 // TODO: distinguish between COM and WinRT interfaces
-struct Implements(Vec<winrt_gen::TypeDefinition>);
+struct Implements(Vec<windows_gen::TypeDefinition>);
 
 impl syn::parse::Parse for Implements {
     fn parse(inner_type: syn::parse::ParseStream) -> syn::parse::Result<Self> {
         let mut types = Vec::new();
-        let reader = winmd::TypeReader::from_build();
+        let reader = winmd::TypeReader::get();
 
         loop {
             use_tree_to_types(reader, &inner_type.parse::<ImplementTree>()?, &mut types)?;
@@ -24,12 +25,12 @@ impl syn::parse::Parse for Implements {
 fn use_tree_to_types(
     reader: &'static winmd::TypeReader,
     tree: &ImplementTree,
-    types: &mut Vec<winrt_gen::TypeDefinition>,
+    types: &mut Vec<windows_gen::TypeDefinition>,
 ) -> syn::parse::Result<()> {
     fn recurse(
         reader: &'static winmd::TypeReader,
         tree: &ImplementTree,
-        types: &mut Vec<winrt_gen::TypeDefinition>,
+        types: &mut Vec<windows_gen::TypeDefinition>,
         current: &mut String,
     ) -> syn::parse::Result<()> {
         match tree {
@@ -51,20 +52,7 @@ fn use_tree_to_types(
             }
             ImplementTree::Name(name) => {
                 let namespace = crate::namespace_literal_to_rough_namespace(&current.clone());
-
-                let namespace_types = match reader
-                    .types
-                    .iter()
-                    .find(|(name, _)| name.to_lowercase() == namespace)
-                {
-                    Some((_, types)) => types,
-                    None => {
-                        return Err(syn::parse::Error::new(
-                            name.ident.span(),
-                            "Metadata not found for type namespace",
-                        ))
-                    }
-                };
+                let namespace = reader.find_lowercase_namespace(&namespace).unwrap(); // TODO: handle
 
                 let mut meta_name = name.ident.to_string();
                 let generic_count = name.generics.params.len();
@@ -74,20 +62,9 @@ fn use_tree_to_types(
                     meta_name.push_str(&generic_count.to_string());
                 }
 
-                let def = match namespace_types.get(&meta_name) {
-                    Some(def) => def,
-                    None => {
-                        return Err(syn::parse::Error::new(
-                            name.ident.span(),
-                            "Metadata not found for type name",
-                        ))
-                    }
-                };
+                let def = reader.expect_type_def((namespace, &meta_name));
 
-                types.push(winrt_gen::TypeDefinition::from_type_def(&winmd::TypeDef {
-                    reader,
-                    row: *def,
-                }));
+                types.push(windows_gen::TypeDefinition::from_type_def(&def));
 
                 // TODO
                 // If type is a class, add any required interfaces.
@@ -124,7 +101,7 @@ pub fn gen(
     let mut queries = TokenStream::new();
 
     for (interface_count, implement) in implements.0.iter().enumerate() {
-        if let winrt_gen::TypeDefinition::Interface(t) = implement {
+        if let windows_gen::TypeDefinition::Interface(t) = implement {
             vtable_ordinals.push(Literal::u32_unsuffixed(interface_count as u32));
 
             let query_interface = format_ident!("QueryInterface_abi{}", interface_count);
@@ -141,16 +118,16 @@ pub fn gen(
             };
 
             shims.combine(&quote! {
-                unsafe extern "system" fn #query_interface(this: ::winrt::RawPtr, iid: &::winrt::Guid, interface: *mut ::winrt::RawPtr) -> ::winrt::ErrorCode {
-                    let this = (this as *mut ::winrt::RawPtr).sub(#interface_count) as *mut Self;
+                unsafe extern "system" fn #query_interface(this: ::windows::RawPtr, iid: &::windows::Guid, interface: *mut ::windows::RawPtr) -> ::windows::ErrorCode {
+                    let this = (this as *mut ::windows::RawPtr).sub(#interface_count) as *mut Self;
                     (*this).QueryInterface(iid, interface)
                 }
-                unsafe extern "system" fn #add_ref(this: ::winrt::RawPtr) -> u32 {
-                    let this = (this as *mut ::winrt::RawPtr).sub(#interface_count) as *mut Self;
+                unsafe extern "system" fn #add_ref(this: ::windows::RawPtr) -> u32 {
+                    let this = (this as *mut ::windows::RawPtr).sub(#interface_count) as *mut Self;
                     (*this).AddRef()
                 }
-                unsafe extern "system" fn #release(this: ::winrt::RawPtr) -> u32 {
-                    let this = (this as *mut ::winrt::RawPtr).sub(#interface_count) as *mut Self;
+                unsafe extern "system" fn #release(this: ::windows::RawPtr) -> u32 {
+                    let this = (this as *mut ::windows::RawPtr).sub(#interface_count) as *mut Self;
                     (*this).Release()
                 }
             });
@@ -160,25 +137,25 @@ pub fn gen(
             let interface_literal = Literal::u32_unsuffixed(interface_count as u32);
 
             for method in &t.default_interface().methods {
-                let method_ident = format_ident!("{}", method.name);
+                let method_ident = format_ident(&method.name);
                 let vcall_ident = format_ident!("abi{}_{}", interface_count, method.vtable_offset);
 
                 vtable_ptrs.combine(&quote! {
                     Self::#vcall_ident,
                 });
 
-                let signature = method.gen_abi();
+                let signature = method.gen_full_abi();
                 let upcall = method.gen_upcall(quote! { (*this).inner.#method_ident }, false);
 
                 shims.combine(&quote! {
                     unsafe extern "system" fn #vcall_ident #signature {
-                        let this = (this as *mut ::winrt::RawPtr).sub(#interface_count) as *mut Self;
+                        let this = (this as *mut ::windows::RawPtr).sub(#interface_count) as *mut Self;
                         #upcall
                     }
                 });
 
                 queries.combine(&quote! {
-                    &<#interface_ident as ::winrt::Interface>::IID => {
+                    &<#interface_ident as ::windows::Interface>::IID => {
                         &mut self.vtable.#interface_literal as *mut _ as _
                     }
                 });
@@ -212,7 +189,7 @@ pub fn gen(
         struct #box_ident {
             vtable: (#(*const #vtable_idents,)*),
             inner: #inner_ident,
-            count: ::winrt::RefCount,
+            count: ::windows::RefCount,
         }
         impl #box_ident {
             const VTABLE: (#(#vtable_idents,)*) = (
@@ -222,26 +199,26 @@ pub fn gen(
                 Self {
                     vtable: (#(&Self::VTABLE.#vtable_ordinals,)*),
                     inner,
-                    count: ::winrt::RefCount::new()
+                    count: ::windows::RefCount::new()
                 }
             }
-            fn QueryInterface(&mut self, iid: &::winrt::Guid, interface: *mut ::winrt::RawPtr) -> ::winrt::ErrorCode {
+            fn QueryInterface(&mut self, iid: &::windows::Guid, interface: *mut ::windows::RawPtr) -> ::windows::ErrorCode {
                 unsafe {
                     *interface = match iid {
                         #queries
-                        &<::winrt::IUnknown as ::winrt::Interface>::IID
-                        | &<::winrt::Object as ::winrt::Interface>::IID
-                        | &<::winrt::IAgileObject as ::winrt::Interface>::IID => {
+                        &<::windows::IUnknown as ::windows::Interface>::IID
+                        | &<::windows::Object as ::windows::Interface>::IID
+                        | &<::windows::IAgileObject as ::windows::Interface>::IID => {
                             &mut self.vtable.0 as *mut _ as _
                         }
                         _ => ::std::ptr::null_mut(),
                     };
 
                     if (*interface).is_null() {
-                        ::winrt::ErrorCode::E_NOINTERFACE
+                        ::windows::ErrorCode::E_NOINTERFACE
                     } else {
                         self.count.add_ref();
-                        ::winrt::ErrorCode::S_OK
+                        ::windows::ErrorCode::S_OK
                     }
                 }
             }
@@ -258,31 +235,31 @@ pub fn gen(
                 remaining
             }
             unsafe extern "system" fn GetIids(
-                _: ::winrt::RawPtr,
+                _: ::windows::RawPtr,
                 count: *mut u32,
-                values: *mut *mut ::winrt::Guid,
-            ) -> ::winrt::ErrorCode {
+                values: *mut *mut ::windows::Guid,
+            ) -> ::windows::ErrorCode {
                 // Note: even if we end up implementing this in future, it still doesn't need a this pointer
                 // since the data to be returned is type- not instance-specific so can be shared for all
                 // interfaces.
                 *count = 0;
                 *values = ::std::ptr::null_mut();
-                ::winrt::ErrorCode(0)
+                ::windows::ErrorCode(0)
             }
             unsafe extern "system" fn GetRuntimeClassName(
-                _: ::winrt::RawPtr,
-                value: *mut ::winrt::RawPtr,
-            ) -> ::winrt::ErrorCode {
-                let h: ::winrt::HString = "Thing".into(); // TODO: replace with class name or first interface
+                _: ::windows::RawPtr,
+                value: *mut ::windows::RawPtr,
+            ) -> ::windows::ErrorCode {
+                let h: ::windows::HString = "Thing".into(); // TODO: replace with class name or first interface
                 *value = ::std::mem::transmute(h);
-                ::winrt::ErrorCode::S_OK
+                ::windows::ErrorCode::S_OK
             }
-            unsafe extern "system" fn GetTrustLevel(_: ::winrt::RawPtr, value: *mut i32) -> ::winrt::ErrorCode {
+            unsafe extern "system" fn GetTrustLevel(_: ::windows::RawPtr, value: *mut i32) -> ::windows::ErrorCode {
                 // Note: even if we end up implementing this in future, it still doesn't need a this pointer
                 // since the data to be returned is type- not instance-specific so can be shared for all
                 // interfaces.
                 *value = 0;
-                ::winrt::ErrorCode(0)
+                ::windows::ErrorCode(0)
             }
             #shims
         }

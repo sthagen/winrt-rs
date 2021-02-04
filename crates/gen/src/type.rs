@@ -1,5 +1,5 @@
 use crate::*;
-use squote::{quote, Ident, TokenStream};
+use squote::{quote, TokenStream};
 use winmd::Decode;
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord)]
@@ -7,6 +7,13 @@ pub struct Type {
     pub kind: TypeKind,
     pub pointers: usize,
     pub array: Option<usize>,
+    pub by_ref: bool,
+    pub modifiers: Vec<winmd::TypeDefOrRef>,
+    pub param: Option<winmd::Param>,
+    pub name: String,
+    pub is_const: bool,
+    pub is_array: bool,
+    pub is_input: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord)]
@@ -31,29 +38,41 @@ pub enum TypeKind {
     Guid,
     IUnknown,
     ErrorCode,
+    Bool32,
+    Matrix3x2,
     Class(TypeName),
     Interface(TypeName),
     Enum(TypeName),
     Struct(TypeName),
     Delegate(TypeName),
     Generic(&'static str),
+    /// A type that hasn't been supported yet.
+    /// For example, multidimensional arrays are not yet supported
+    NotYetSupported,
 }
 
 impl Type {
     pub fn from_blob(
         blob: &mut winmd::Blob,
+        param: Option<winmd::Param>,
         generics: &[TypeKind],
         calling_namespace: &'static str,
-    ) -> Self {
-        blob.read_expected(0x1D);
+        is_return_type: bool,
+    ) -> Option<Self> {
+        let modifiers = blob.read_modifiers();
+        let mut by_ref = blob.read_expected(0x10);
+
+        if blob.read_expected(0x01) {
+            return None;
+        }
+
+        let is_array = blob.read_expected(0x1D);
 
         let mut pointers = 0;
 
         while blob.read_expected(0x0f) {
             pointers += 1;
         }
-
-        blob.read_modifiers();
 
         let kind = match blob.read_unsigned() {
             0x01 => TypeKind::Void,
@@ -79,7 +98,7 @@ impl Type {
 
                 if def.name().0.is_empty() {
                     // TODO: handle nested types
-                    TypeKind::Bool
+                    TypeKind::NotYetSupported
                 } else {
                     TypeKind::from_type_def_or_ref(&def, generics, calling_namespace)
                 }
@@ -91,7 +110,7 @@ impl Type {
                 // rank (dimensions)
                 // bounds count
                 // bound
-                TypeKind::Bool
+                TypeKind::NotYetSupported
             }
             0x15 => TypeKind::from_type_name(TypeName::from_type_spec_blob(
                 blob,
@@ -101,42 +120,85 @@ impl Type {
             unused => panic!("Type::from_blob 0x{:X}", unused),
         };
 
-        Self {
+        let mut is_input = false;
+
+        let mut is_const = modifiers
+            .iter()
+            .any(|def| def.name() == ("System.Runtime.CompilerServices", "IsConst"));
+
+        let mut name = if let Some(param) = param {
+            is_input = !param.flags().output();
+
+            // TODO: workaround for https://github.com/microsoft/win32metadata/issues/63
+            if is_input && param.has_attribute(("Windows.Win32.Interop", "ComOutPtrAttribute")) {
+                is_input = false;
+            }
+
+            if !is_const {
+                is_const = param.has_attribute(("Windows.Win32.Interop", "ConstAttribute"));
+            }
+
+            param.name()
+        } else {
+            "result__"
+        };
+
+        if is_return_type {
+            by_ref = true;
+            is_input = false;
+            name = "result__";
+        }
+
+        let name = to_snake(name);
+
+        Some(Self {
+            by_ref,
             kind,
             pointers,
             array: None,
-        }
+            modifiers,
+            param,
+            name,
+            is_const,
+            is_array,
+            is_input,
+        })
     }
 
     pub fn from_field(field: &winmd::Field, calling_namespace: &'static str) -> Self {
         let mut blob = field.sig();
         blob.read_unsigned();
         blob.read_modifiers();
-        Self::from_blob(&mut blob, &Vec::new(), calling_namespace)
+        Self::from_blob(&mut blob, None, &Vec::new(), calling_namespace, false).unwrap()
     }
 
     pub fn gen_field(&self) -> TokenStream {
         let mut tokens = TokenStream::new();
 
         for _ in 0..self.pointers {
-            tokens.combine(&quote! { *mut });
+            if self.is_const {
+                tokens.combine(&quote! { *const });
+            } else {
+                tokens.combine(&quote! { *mut });
+            }
         }
 
         let kind = self.kind.gen();
 
         match &self.kind {
-            TypeKind::Interface(_) | TypeKind::Delegate(_) | TypeKind::IUnknown => {
-                tokens.combine(&quote! {
-                    ::std::option::Option<#kind>
-                })
-            }
+            TypeKind::Class(_)
+            | TypeKind::Interface(_)
+            | TypeKind::Delegate(_)
+            | TypeKind::IUnknown => tokens.combine(&quote! {
+                ::std::option::Option<#kind>
+            }),
             _ => tokens.combine(&kind),
         };
 
         tokens
     }
 
-    pub fn gen_clone(&self, name: &Ident) -> TokenStream {
+    pub fn gen_clone(&self, name: &TokenStream) -> TokenStream {
         match self.kind {
             TypeKind::Bool
             | TypeKind::Char
@@ -162,14 +224,27 @@ impl Type {
         }
     }
 
-    pub fn gen_abi(&self) -> TokenStream {
+    fn gen_abi_pointer_part(&self) -> TokenStream {
         let mut tokens = TokenStream::new();
 
         for _ in 0..self.pointers {
             tokens.combine(&quote! { *mut });
         }
 
+        tokens
+    }
+
+    pub fn gen_abi(&self) -> TokenStream {
+        let mut tokens = self.gen_abi_pointer_part();
+
         tokens.combine(&self.kind.gen_abi());
+        tokens
+    }
+
+    pub fn gen_full_abi(&self) -> TokenStream {
+        let mut tokens = self.gen_abi_pointer_part();
+
+        tokens.combine(&self.kind.gen_full_abi());
         tokens
     }
 
@@ -253,11 +328,17 @@ impl TypeKind {
 
     pub fn from_type_ref(type_ref: &winmd::TypeRef, calling_namespace: &'static str) -> Self {
         match type_ref.name() {
-            ("System", "Guid") => Self::Guid,
-            ("Windows.Win32", "IUnknown") => Self::IUnknown,
+            ("System", "Guid") | ("Windows.Win32.Com", "Guid") => Self::Guid,
+            ("Windows.Win32.Com", "IUnknown") => Self::IUnknown,
             ("Windows.Foundation", "HResult") => Self::ErrorCode,
+            ("Windows.Win32.Com", "HRESULT") => Self::ErrorCode,
+            ("Windows.Win32.SystemServices", "BOOL") => Self::Bool32,
+            // TODO: workaround for https://github.com/microsoft/win32metadata/issues/181
+            ("Windows.Win32.SystemServices", "LARGE_INTEGER") => Self::I64,
+            ("Windows.Win32.SystemServices", "ULARGE_INTEGER") => Self::U64,
+            ("Windows.Win32.Direct2D", "D2D_MATRIX_3X2_F") => Self::Matrix3x2,
             (namespace, name) => Self::from_type_def(
-                &type_ref.reader.resolve_type_def((namespace, name)),
+                &type_ref.reader.expect_type_def((namespace, name)),
                 calling_namespace,
             ),
         }
@@ -313,11 +394,13 @@ impl TypeKind {
             Self::F64 => quote! { f64 },
             Self::ISize => quote! { isize },
             Self::USize => quote! { usize },
-            Self::String => quote! { ::winrt::HString },
-            Self::Object => quote! { ::winrt::Object },
-            Self::Guid => quote! { ::winrt::Guid },
-            Self::IUnknown => quote! { ::winrt::IUnknown },
-            Self::ErrorCode => quote! { ::winrt::ErrorCode },
+            Self::String => quote! { ::windows::HString },
+            Self::Object => quote! { ::windows::Object },
+            Self::Guid => quote! { ::windows::Guid },
+            Self::IUnknown => quote! { ::windows::IUnknown },
+            Self::ErrorCode => quote! { ::windows::ErrorCode },
+            Self::Bool32 => quote! { ::windows::BOOL },
+            Self::Matrix3x2 => quote! { ::windows::foundation::numerics::Matrix3x2 },
             Self::Class(name) => name.gen(),
             Self::Interface(name) => name.gen(),
             Self::Enum(name) => name.gen(),
@@ -327,6 +410,7 @@ impl TypeKind {
                 let name = format_ident(name);
                 quote! { #name }
             }
+            Self::NotYetSupported => quote! { ::windows::NOT_YET_SUPPORTED_TYPE },
         }
     }
 
@@ -347,11 +431,13 @@ impl TypeKind {
             Self::F64 => quote! { f64 },
             Self::ISize => quote! { isize },
             Self::USize => quote! { usize },
-            Self::String => quote! { ::winrt::HString },
-            Self::Object => quote! { ::winrt::Object },
-            Self::Guid => quote! { ::winrt::Guid },
-            Self::IUnknown => quote! { ::winrt::IUnknown },
-            Self::ErrorCode => quote! { ::winrt::ErrorCode },
+            Self::String => quote! { ::windows::HString },
+            Self::Object => quote! { ::windows::Object },
+            Self::Guid => quote! { ::windows::Guid },
+            Self::IUnknown => quote! { ::windows::IUnknown },
+            Self::ErrorCode => quote! { ::windows::ErrorCode },
+            Self::Bool32 => quote! { ::windows::BOOL },
+            Self::Matrix3x2 => quote! { ::windows::foundation::numerics::Matrix3x2 },
             Self::Class(name) => name.gen_full(),
             Self::Interface(name) => name.gen_full(),
             Self::Enum(name) => name.gen_full(),
@@ -361,6 +447,7 @@ impl TypeKind {
                 let name = format_ident(name);
                 quote! { #name }
             }
+            Self::NotYetSupported => quote!(::windows::NOT_YET_SUPPORTED_TYPE),
         }
     }
 
@@ -381,22 +468,64 @@ impl TypeKind {
             Self::F64 => quote! { f64 },
             Self::ISize => quote! { isize },
             Self::USize => quote! { usize },
-            Self::Guid => quote! { ::winrt::Guid },
-            Self::ErrorCode => quote! { ::winrt::ErrorCode },
+            Self::Guid => quote! { ::windows::Guid },
+            Self::ErrorCode => quote! { ::windows::ErrorCode },
+            Self::Bool32 => quote! { ::windows::BOOL },
+            Self::Matrix3x2 => quote! { ::windows::foundation::numerics::Matrix3x2 },
             Self::String
             | Self::Object
             | Self::IUnknown
             | Self::Class(_)
             | Self::Interface(_)
             | Self::Delegate(_) => {
-                quote! { ::winrt::RawPtr }
+                quote! { ::windows::RawPtr }
             }
             Self::Generic(name) => {
                 let name = format_ident(name);
-                quote! { <#name as ::winrt::Abi>::Abi }
+                quote! { <#name as ::windows::Abi>::Abi }
             }
             Self::Enum(name) => name.gen(),
             Self::Struct(name) => name.gen_abi(),
+            Self::NotYetSupported => quote!(::windows::NOT_YET_SUPPORTED_TYPE),
+        }
+    }
+
+    pub fn gen_full_abi(&self) -> TokenStream {
+        match self {
+            Self::Void => quote! { ::std::ffi::c_void },
+            Self::Bool => quote! { bool },
+            Self::Char => quote! { u16 },
+            Self::I8 => quote! { i8 },
+            Self::U8 => quote! { u8 },
+            Self::I16 => quote! { i16 },
+            Self::U16 => quote! { u16 },
+            Self::I32 => quote! { i32 },
+            Self::U32 => quote! { u32 },
+            Self::I64 => quote! { i64 },
+            Self::U64 => quote! { u64 },
+            Self::F32 => quote! { f32 },
+            Self::F64 => quote! { f64 },
+            Self::ISize => quote! { isize },
+            Self::USize => quote! { usize },
+            Self::Guid => quote! { ::windows::Guid },
+            Self::ErrorCode => quote! { ::windows::ErrorCode },
+            Self::Bool32 => quote! { ::windows::BOOL },
+            Self::Matrix3x2 => quote! { ::windows::foundation::numerics::Matrix3x2 },
+            Self::String
+            | Self::Object
+            | Self::IUnknown
+            | Self::Class(_)
+            | Self::Interface(_)
+            | Self::Delegate(_) => {
+                quote! { ::windows::RawPtr }
+            }
+            Self::Generic(name) => {
+                let name = format_ident(name);
+                quote! { <#name as ::windows::Abi>::Abi }
+            }
+            Self::Enum(name) => name.gen_full(),
+            Self::Struct(name) => name.gen_full_abi(),
+            Self::NotYetSupported => quote!(::windows::NOT_YET_SUPPORTED_TYPE),
         }
     }
 
@@ -415,8 +544,8 @@ impl TypeKind {
             | Self::ISize
             | Self::USize => quote! { 0 },
             Self::F32 | Self::F64 => quote! { 0.0 },
-            Self::String => quote! { ::winrt::HString::new() },
-            Self::Guid => quote! { ::winrt::Guid::zeroed() },
+            Self::String => quote! { ::windows::HString::new() },
+            Self::Guid => quote! { ::windows::Guid::zeroed() },
             _ => quote! { ::std::default::Default::default() },
         }
     }

@@ -1,5 +1,5 @@
 use crate::*;
-use winrt_gen::HexReader;
+use windows_gen::HexReader;
 
 /// A globally unique identifier [(GUID)](https://docs.microsoft.com/en-us/windows/win32/api/guiddef/ns-guiddef-guid)
 /// used to identify COM and WinRT interfaces.
@@ -58,6 +58,18 @@ impl Guid {
                 fourth, bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
             ],
         )
+    }
+
+    /// Looks up a CLSID in the registry using the [CLSIDFromProgID](https://docs.microsoft.com/en-us/windows/win32/api/combaseapi/nf-combaseapi-clsidfromprogid) function.
+    pub fn from_progid(progid: &str) -> crate::Result<Guid> {
+        let progid = HString::from(progid);
+        let mut guid = Guid::zeroed();
+
+        unsafe {
+            CLSIDFromProgID(progid.as_wide().as_ptr() as *mut _, &mut guid).ok()?;
+        }
+
+        Ok(guid)
     }
 }
 
@@ -122,4 +134,9 @@ impl From<&str> for Guid {
 
         Guid::from_values(a, b, c, [d, e, f, g, h, i, j, k])
     }
+}
+
+#[link(name = "ole32")]
+extern "system" {
+    fn CLSIDFromProgID(progid: *mut u16, clsid: &mut Guid) -> ErrorCode;
 }
